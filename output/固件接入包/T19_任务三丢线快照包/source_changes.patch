@@ -1,0 +1,171 @@
+--- a/Core/Inc/car_state.h
++++ b/Core/Inc/car_state.h
+@@ -103,6 +103,13 @@
+     float leg_start;
+     float start_heading;
+     CarTask3 task3;
++    struct {
++        uint8_t valid_seen, lost_seen;
++        uint8_t valid_raw[4], lost_raw[4];
++        uint32_t lost_ms;
++        float valid_error, valid_diff, lost_yaw;
++        float targets[2], velocity[2];
++    } task3_trace; /* First invalid arc sample; retained after F7/OFF/moving. */
+ } CarRouteState;
+ 
+ typedef struct {
+--- a/Core/Src/car_ui.c
++++ b/Core/Src/car_ui.c
+@@ -10,7 +10,7 @@
+         static const char *const states[] = {"IDLE", "RUN", "DONE", "OFF", "LOW",
+             "ADC", "GAP", "REV", "FAST", "STALL", "UART", "STOP", "YAW", "BRAKE", "TIMEOUT", "SETTLE", "LOST", "LINE"};
+         const char *title = "TASK 1 A->B";
+-        if (app->route.motion == MOVE_TASK3 || (app->route.motion == MOVE_NONE && app->button.selected_motion == MOVE_TASK3)) title = "TASK 3 AUTO START";
++        if (app->route.motion == MOVE_TASK3 || (app->route.motion == MOVE_NONE && app->button.selected_motion == MOVE_TASK3)) title = "TASK 3 SNAP V1";
+         else if (app->route.motion == MOVE_TASK2 || (app->route.motion == MOVE_NONE && app->button.selected_motion == MOVE_TASK2)) title = "TASK 2 ONE LAP";
+         else if (app->route.motion == MOVE_LINE || (app->route.motion == MOVE_NONE && app->button.selected_motion == MOVE_LINE)) title = "TEST HALF ARC";
+         else if (app->route.motion == MOVE_DISTANCE) title = "TEST GO20";
+@@ -18,6 +18,9 @@
+         else if (app->route.motion == MOVE_TEST) title = "TEST RUN";
+         else if (app->route.motion != MOVE_NONE && app->route.motion != MOVE_ROUTE) title = "MANUAL";
+         char cal[24], run[24], progress[32];
++        int lost_snapshot = app->route.motion == MOVE_TASK3 && app->route.task3.phase == T3_FAULT &&
++            app->route.task3.fault == T3_LOST && app->route.task3_trace.lost_seen;
++        unsigned snapshot_page = lost_snapshot ? (unsigned)((uint32_t)(now - app->route.task3_trace.lost_ms) / 2000U) % 2U : 0U;
+         (void)snprintf(cal, sizeof cal, "YC %s EN %s", phases[app->heading.phase], enabled ? "ON" : "OFF");
+         (void)snprintf(run, sizeof run, "STATE %s", states[app->runtime.state]);
+         if (app->route.motion == MOVE_TASK2 || (app->route.motion == MOVE_NONE && app->button.selected_motion == MOVE_TASK2)) {
+@@ -33,7 +36,26 @@
+             (void)snprintf(run, sizeof run, "%s %s T%lu.%lus", states[app->runtime.state], segment,
+                 (unsigned long)(elapsed / 1000U), (unsigned long)((elapsed / 100U) % 10U));
+         }
+-        if (!enabled) {
++        if (lost_snapshot) {
++            if (snapshot_page == 0U) {
++                (void)snprintf(cal, sizeof cal, "LF%u%u%u%u PRE%u%u%u%u",
++                    (unsigned)app->route.task3_trace.lost_raw[0], (unsigned)app->route.task3_trace.lost_raw[1],
++                    (unsigned)app->route.task3_trace.lost_raw[2], (unsigned)app->route.task3_trace.lost_raw[3],
++                    (unsigned)app->route.task3_trace.valid_raw[0], (unsigned)app->route.task3_trace.valid_raw[1],
++                    (unsigned)app->route.task3_trace.valid_raw[2], (unsigned)app->route.task3_trace.valid_raw[3]);
++                (void)snprintf(progress, sizeof progress, "P%u F%u S%d Y%d",
++                    (unsigned)app->route.task3.phase, (unsigned)app->route.task3.fault,
++                    CarMath_Round((app->route.distance_mm[LEFT] + app->route.distance_mm[RIGHT]) * 0.5f - app->route.task3.leg_start_mm),
++                    CarMath_Round(app->route.task3_trace.lost_yaw));
++            } else {
++                (void)snprintf(cal, sizeof cal, "E%d C%d PRE%u",
++                    CarMath_Round(app->route.task3_trace.valid_error * 100.0f),
++                    CarMath_Round(app->route.task3_trace.valid_diff), (unsigned)app->route.task3_trace.valid_seen);
++                (void)snprintf(progress, sizeof progress, "T%d/%d V%d/%d",
++                    CarMath_Round(app->route.task3_trace.targets[LEFT]), CarMath_Round(app->route.task3_trace.targets[RIGHT]),
++                    CarMath_Round(app->route.task3_trace.velocity[LEFT]), CarMath_Round(app->route.task3_trace.velocity[RIGHT]));
++            }
++        } else if (!enabled) {
+             CarLine_Read(app);
+             (void)snprintf(progress, sizeof progress, "LF %u %u %u %u",
+                 (unsigned)app->line.raw[0], (unsigned)app->line.raw[1], (unsigned)app->line.raw[2], (unsigned)app->line.raw[3]);
+--- a/Core/Src/car_route.c
++++ b/Core/Src/car_route.c
+@@ -34,6 +34,7 @@
+     CarSignal_Set(app, 0);
+     app->button.selected_motion = selected;
+     memset(&app->route.task3, 0, sizeof app->route.task3);
++    memset(&app->route.task3_trace, 0, sizeof app->route.task3_trace);
+     app->route.leg = app->route.edge_seen = 0U;
+     app->route.leg_start = 0.0f;
+     app->route.elapsed_ms = 0U;
+@@ -119,6 +120,7 @@
+                 CarApp_Stop(app, CarTask3Port_StopState(app->route.task3.fault), '-');
+                 return;
+             }
++            memset(&app->route.task3_trace, 0, sizeof app->route.task3_trace);
+             app->route.leg = 0U; app->route.leg_start = 0.0f; app->route.elapsed_ms = 0U;
+             app->route.goal = 2.0f * (app->route.task3.diagonal_mm + config.arc_mm);
+             app->route.cruise = config.diagonal_mmps;
+@@ -207,6 +209,18 @@
+         int enabled = HAL_GPIO_ReadPin(GPIOC, GPIO_PIN_13) == GPIO_PIN_RESET;
+         CarTask3Input input = CarTask3Port_Input(app, now, enabled, 0, 0);
+         CarTask3Output output;
++        if (app->route.task3.phase == T3_ARC && !input.line_valid && !app->route.task3_trace.lost_seen) {
++            /* Capture before HALT clears PI/targets. Never read GPIO later as
++               evidence of the earlier loss; the car may already be moved. */
++            app->route.task3_trace.lost_seen = 1U;
++            app->route.task3_trace.lost_ms = now;
++            app->route.task3_trace.lost_yaw = input.yaw_deg;
++            memcpy(app->route.task3_trace.lost_raw, app->line.raw, 4U);
++            for (unsigned w = 0; w < 2U; ++w) {
++                app->route.task3_trace.targets[w] = app->route.targets[w];
++                app->route.task3_trace.velocity[w] = app->wheel.items[w].velocity;
++            }
++        }
+         CarTask3_Update(&app->route.task3, &input, &output);
+         app->route.leg = app->route.task3.leg;
+         app->route.leg_start = app->route.task3.leg_start_mm;
+@@ -220,6 +234,13 @@
+             app->signal.ms = now;
+             CarSignal_Set(app, 1); /* One final A signal, after settled stop. */
+         } else CarTask3Port_Apply(app, &output, now);
++        if (app->runtime.state == RUNNING && app->route.task3.phase == T3_ARC && input.line_valid) {
++            app->route.task3_trace.valid_seen = 1U;
++            app->route.task3_trace.lost_seen = 0U; /* Transient recovery starts a fresh loss window. */
++            memcpy(app->route.task3_trace.valid_raw, app->line.raw, 4U);
++            app->route.task3_trace.valid_error = app->line.error;
++            app->route.task3_trace.valid_diff = (app->route.targets[LEFT] - app->route.targets[RIGHT]) * 0.5f;
++        }
+         return; /* Old distance/Task2 logic must never overwrite Task3 intent. */
+     }
+                 /* Accumulate signed wheel travel only from the fresh start snapshot.
+--- a/Core/Src/car_app.c
++++ b/Core/Src/car_app.c
+@@ -113,6 +113,7 @@
+     app->runtime.state = IDLE;
+     app->route.motion = MOVE_NONE;
+     memset(&app->route.task3, 0, sizeof app->route.task3);
++    memset(&app->route.task3_trace, 0, sizeof app->route.task3_trace);
+     app->route.switching = 0;
+     app->route.manual_speed = DPT_MANUAL_MMPS;
+     app->route.manual_duration = DPT_MANUAL_DURATION_MS;
+--- a/tools/tests/test_task3.c
++++ b/tools/tests/test_task3.c
+@@ -111,7 +111,7 @@
+  assert(app()->runtime.state==DONE && app()->route.task3.phase==T3_DONE && signals==5 && a==0 && b==0);
+  assert(app()->route.elapsed_ms<40000 && app()->route.leg==3U && rp[0]==wp[0] && wp[1]==0);
+  for(unsigned i=0;i<50;i++)step(10,0,0);
+- assert(signals==5 && !app()->signal.active && strcmp(oled_lines[0],"TASK 3 AUTO START")==0);
++ assert(signals==5 && !app()->signal.active && strcmp(oled_lines[0],"TASK 3 SNAP V1")==0);
+  assert(strstr(oled_lines[2],"DONE DA T"));for(unsigned i=0;i<4;i++)assert(strlen(oled_lines[i])<=21);
+  /* Task-specific faster schedule, with unchanged half-circle speed/deadline. */
+  assert(CarRoute_Task3Config().diagonal_mmps==240 && CarRoute_Task3Config().arc_mmps==200);
+@@ -223,6 +223,33 @@
+  assert(app()->runtime.state==YAW_BAD && app()->route.task3.fault==T3_TURN && a==0 && b==0);
+  task3_start();app()->route.start_ms=ms-40000U;step(10,0,0);
+  assert(app()->runtime.state==TIMEOUT && app()->route.task3.fault==T3_TIMEOUT && a==0 && b==0);
++ /* Frozen loss evidence survives OFF and physical movement, but recovers/restarts clear it. */
++ task3_start();reach_phase(T3_ARC);line_inputs=11;step(10,177,176);
++ assert(app()->route.task3_trace.valid_seen && app()->route.task3_trace.valid_raw[0]==1 && app()->route.task3_trace.valid_raw[2]==0);
++ float old_targets[2]={app()->route.targets[0],app()->route.targets[1]};
++ app()->heading.angle=-1;line_inputs=15;step(10,177,176);
++ assert(a==0 && b==0 && app()->route.task3_trace.lost_seen && app()->runtime.state==RUNNING);
++ assert(app()->route.task3_trace.lost_raw[0]==1 && app()->route.task3_trace.lost_raw[3]==1);
++ assert(app()->route.task3_trace.targets[0]==old_targets[0] && app()->route.task3_trace.targets[1]==old_targets[1]);
++ assert(app()->route.task3_trace.velocity[0]>55 && app()->route.task3_trace.velocity[1]>55);
++ uint32_t loss_ms=app()->route.task3_trace.lost_ms;
++ for(unsigned k=0;k<10;k++)step(10,0,0);
++ assert(app()->runtime.state==LINE_LOST && app()->route.task3.fault==T3_LOST);
++ off=1;line_inputs=0;app()->heading.angle=90;step(10,600,600);
++ assert(app()->route.task3_trace.lost_ms==loss_ms && app()->route.task3_trace.lost_yaw==-1);
++ assert(app()->route.task3_trace.lost_raw[0]==1 && app()->route.task3_trace.targets[0]==old_targets[0]);
++ app()->ui.render_ms=ms-200;step(10,0,0);
++ assert(strcmp(oled_lines[1],"LF1111 PRE1101")==0 && strstr(oled_lines[3],"Y-1"));
++ for(unsigned k=0;k<205;k++)step(10,0,0);
++ assert(strncmp(oled_lines[1],"E",1)==0 && strncmp(oled_lines[3],"T",1)==0 && strstr(oled_lines[3]," V"));
++ for(unsigned j=0;j<4;j++)assert(strlen(oled_lines[j])<=21);
++ /* A short invalid glitch recovers; final fault must freeze the later invalid pattern. */
++ task3_start();reach_phase(T3_ARC);line_inputs=9;step(10,177,176);
++ line_inputs=15;step(10,0,0);uint32_t first_loss=app()->route.task3_trace.lost_ms;
++ line_inputs=13;step(10,0,0);assert(!app()->route.task3_trace.lost_seen);
++ line_inputs=0;step(10,0,0);assert(app()->route.task3_trace.lost_ms!=first_loss && app()->route.task3_trace.lost_raw[0]==0);
++ for(unsigned k=0;k<10;k++)step(10,0,0);assert(app()->runtime.state==LINE_LOST);
++ queue(0,"TASK3!");step(10,0,0);assert(app()->runtime.state==RUNNING && !app()->route.task3_trace.lost_seen && !app()->route.task3_trace.valid_seen);
+  /* USB and BT fault/STOP priority; TX congestion doesn't stop the route. */
+  task3_start();assert(DualPITest_EnableBluetooth(&uart_mock)==HAL_ERROR);
+  task3_start();full_tx=1;for(unsigned i=0;i<100;i++)step_route();assert(app()->runtime.state==RUNNING);

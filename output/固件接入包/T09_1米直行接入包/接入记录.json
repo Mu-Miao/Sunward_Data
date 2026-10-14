@@ -1,0 +1,24 @@
+{
+  "backup": "/Users/mzh/Desktop/车车/output/固件备份/Sunward_1米接入前备份_2026-10-10_o1d1gglg",
+  "hardware_downloaded": false,
+  "go20_target_mmps": 60,
+  "go20_distance_mm": 200,
+  "go100_cruise_mmps": 120,
+  "go100_start_mmps": 40,
+  "go100_accel_mmps2": 100,
+  "go100_distance_mm": 1000,
+  "go100_slow_mm": 100,
+  "go100_timeout_ms": 13500,
+  "signal_ms": 500,
+  "settle_ms": 200,
+  "brake_timeout_ms": 1500,
+  "max_cmd": 1800,
+  "heading_gain_mmps_per_degree": 1,
+  "heading_max_diff_mmps": 15,
+  "source_files_changed": [
+    "Core/Inc/dual_pi_test.h",
+    "Core/Src/dual_pi_test.c"
+  ],
+  "hex_sha256": "5b35c4b6f896b13a3e54b9e8ce4a10b1bc5b11e81c3be3674aec5c8c6c79a454",
+  "build_returncode": 0
+}

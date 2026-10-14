@@ -1,0 +1,1 @@
+PASS: actual GPIO SPI rising-edge decode, MSB-first byte/DC boundaries; SSD1306 trial init and C10B pins; boot clear; 8-byte/ms chunks with full-page coverage, clock low when idle; 4-row doubled ASCII glyphs, truncation/padding/sanitization; frozen frames and unchanged text; DWT/ms wrap and no runtime HAL_Delay. No physical panel detection.

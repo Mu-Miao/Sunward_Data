@@ -1,0 +1,95 @@
+[ INFO ] start building at 2026-10-11 16:39:28
+
+[ TOOL ] arm-none-eabi-gcc (GNU Tools for STM32 14.3.rel1.20251027-0700) 14.3.1 20250623
+
+[ INFO ] file statistics (rebuild mode)
+
++---------+-----------+-----------+---------------+--------+
+| C Files | Cpp Files | Asm Files | Lib/Obj Files | Totals |
++---------+-----------+-----------+---------------+--------+
+| 34      | 0         | 1         | 0             | 35     |
++---------+-----------+-----------+---------------+--------+
+
+[ INFO ] start compiling (jobs: 10) ...
+
+>> [  2%] CC 'Core/Src/gpio.c'
+>> [  5%] CC 'Core/Src/adc.c'
+>> [  8%] CC 'Core/Src/stm32f1xx_hal_msp.c'
+>> [ 11%] CC 'Core/Src/lab_uart_async.c'
+>> [ 14%] CC 'Core/Src/dual_pi_test.c'
+>> [ 17%] CC 'Core/Src/left_pi_test.c'
+>> [ 20%] CC 'Core/Src/mpu6050.c'
+>> [ 22%] CC 'Core/Src/sysmem.c'
+>> [ 25%] CC 'Core/Src/tim.c'
+>> [ 28%] CC 'Core/Src/syscalls.c'
+>> [ 31%] CC 'Core/Src/right_p_test.c'
+>> [ 34%] CC 'Core/Src/stm32f1xx_it.c'
+>> [ 37%] CC 'Core/Src/system_stm32f1xx.c'
+>> [ 40%] AS 'Core/Startup/startup_stm32f103rctx.s'
+>> [ 42%] CC 'Drivers/STM32F1xx_HAL_Driver/Src/stm32f1xx_hal_adc_ex.c'
+>> [ 45%] CC 'Drivers/STM32F1xx_HAL_Driver/Src/stm32f1xx_hal.c'
+>> [ 48%] CC 'Core/Src/yaw_diag.c'
+>> [ 51%] CC 'Drivers/STM32F1xx_HAL_Driver/Src/stm32f1xx_hal_cortex.c'
+>> [ 54%] CC 'Drivers/STM32F1xx_HAL_Driver/Src/stm32f1xx_hal_adc.c'
+>> [ 57%] CC 'Core/Src/soft_i2c.c'
+>> [ 60%] CC 'Core/Src/main.c'
+./Core/Src/main.c:352:13: warning: 'BT_TestRun' defined but not used [-Wunused-function]
+  352 | static void BT_TestRun(void)
+      |             ^~~~~~~~~~
+./Core/Src/main.c:331:12: warning: 'Lab_PIForward' defined but not used [-Wunused-function]
+  331 | static int Lab_PIForward(LabPI *pi, float target_mps, float measured_mps,
+      |            ^~~~~~~~~~~~~
+./Core/Src/main.c:318:14: warning: 'Lab_WheelSpeed' defined but not used [-Wunused-function]
+  318 | static float Lab_WheelSpeed(int32_t delta, int forward_sign,
+      |              ^~~~~~~~~~~~~~
+./Core/Src/main.c:295:13: warning: 'Lab_PrintMPURaw' defined but not used [-Wunused-function]
+  295 | static void Lab_PrintMPURaw(void)
+      |             ^~~~~~~~~~~~~~~
+./Core/Src/main.c:278:13: warning: 'Lab_PrintBatteryRaw' defined but not used [-Wunused-function]
+  278 | static void Lab_PrintBatteryRaw(void)
+      |             ^~~~~~~~~~~~~~~~~~~
+./Core/Src/main.c:257:13: warning: 'Lab_PrintTickRate' defined but not used [-Wunused-function]
+  257 | static void Lab_PrintTickRate(void)
+      |             ^~~~~~~~~~~~~~~~~
+./Core/Src/main.c:236:13: warning: 'Lab_PrintEncoders' defined but not used [-Wunused-function]
+  236 | static void Lab_PrintEncoders(void)
+      |             ^~~~~~~~~~~~~~~~~
+./Core/Src/main.c:205:13: warning: 'Lab_MotorTestOnce' defined but not used [-Wunused-function]
+  205 | static void Lab_MotorTestOnce(void)
+      |             ^~~~~~~~~~~~~~~~~
+./Core/Src/main.c:149:13: warning: 'Lab_PrintLine' defined but not used [-Wunused-function]
+  149 | static void Lab_PrintLine(void)
+      |             ^~~~~~~~~~~~~
+./Core/Src/main.c:61:17: warning: 'line_log_ms' defined but not used [-Wunused-variable]
+   61 | static uint32_t line_log_ms = 0U;
+      |                 ^~~~~~~~~~~
+>> [ 62%] CC 'Core/Src/usart.c'
+>> [ 65%] CC 'Core/Src/wheel_speed_diag.c'
+>> [ 68%] CC 'Drivers/STM32F1xx_HAL_Driver/Src/stm32f1xx_hal_gpio_ex.c'
+>> [ 71%] CC 'Drivers/STM32F1xx_HAL_Driver/Src/stm32f1xx_hal_exti.c'
+>> [ 74%] CC 'Drivers/STM32F1xx_HAL_Driver/Src/stm32f1xx_hal_gpio.c'
+>> [ 77%] CC 'Drivers/STM32F1xx_HAL_Driver/Src/stm32f1xx_hal_flash.c'
+>> [ 80%] CC 'Drivers/STM32F1xx_HAL_Driver/Src/stm32f1xx_hal_rcc.c'
+>> [ 82%] CC 'Drivers/STM32F1xx_HAL_Driver/Src/stm32f1xx_hal_flash_ex.c'
+>> [ 85%] CC 'Drivers/STM32F1xx_HAL_Driver/Src/stm32f1xx_hal_dma.c'
+>> [ 88%] CC 'Drivers/STM32F1xx_HAL_Driver/Src/stm32f1xx_hal_pwr.c'
+>> [ 91%] CC 'Drivers/STM32F1xx_HAL_Driver/Src/stm32f1xx_hal_rcc_ex.c'
+>> [ 94%] CC 'Drivers/STM32F1xx_HAL_Driver/Src/stm32f1xx_hal_uart.c'
+>> [ 97%] CC 'Drivers/STM32F1xx_HAL_Driver/Src/stm32f1xx_hal_tim_ex.c'
+>> [100%] CC 'Drivers/STM32F1xx_HAL_Driver/Src/stm32f1xx_hal_tim.c'
+
+[ INFO ] start linking ...
+
+Memory region         Used Size  Region Size  %age Used
+             RAM:        4152 B        48 KB      8.45%
+           FLASH:       28960 B       256 KB     11.05%
+
+
+[ INFO ] start outputting files ...
+
+>> output hex file		[done]
+
+file path: "build/Debug/Sunward.hex"
+
+[ DONE ] build successfully !, elapsed time 0:0:1
+

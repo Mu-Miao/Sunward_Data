@@ -1,0 +1,8 @@
+2026-10-08：仅用软件伪终端进行测试，未打开真实USB串口、未发送小车命令。
+PASS：连续两次类似Reset的截断字节流原样保存、JSON有效、接收循环有时间上限、STOP写入、非法命令拒绝、终端控制字符转义。
+测试目录：/var/folders/km/_7yflgx14vz590b21099ygr00000gn/T/serial-recorder-test-mm5hwnc6
+
+2026-10-08 18:58 RTS/DTR修正后：未打开真实USB串口。
+PASS：模拟ioctl验证取消RTS/DTR置位的掩码/顺序/驱动读回、保留其他位、未释放或不支持时拒绝；伪终端截断流、JSON/bin、STOP、命令拒绝、终端转义仍通过。
+测试目录：/var/folders/km/_7yflgx14vz590b21099ygr00000gn/T/serial-recorder-test-w793i6e9
+仅软件验证；CH9102实际输出电压与Reset后Boot/DPI尚待实物复测。

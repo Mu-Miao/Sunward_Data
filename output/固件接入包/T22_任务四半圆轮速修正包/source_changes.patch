@@ -1,0 +1,69 @@
+--- a/Core/Inc/car_config.h
++++ b/Core/Inc/car_config.h
+@@ -87,6 +87,8 @@
+ #define DPT_TASK3_TURN_TIMEOUT_MS 4000U
+ #define DPT_TASK3_CAPTURE_TIMEOUT_MS 2000U
+ /* Task4 reuses the tested Task3 geometry/speeds; this is a safety watchdog. */
++#define DPT_TASK4_ARC_MMPS 160.0f /* Keep outer-wheel demand <=224mm/s. */
++#define DPT_TASK4_ARC_ACCEL_MMPS2 70.0f
+ #define DPT_TASK4_LAPS 4U
+ #define DPT_TASK4_TIMEOUT_MS 160000U
+ #endif
+--- a/Core/Src/car_ui.c
++++ b/Core/Src/car_ui.c
+@@ -10,7 +10,7 @@
+         static const char *const states[] = {"IDLE", "RUN", "DONE", "OFF", "LOW",
+             "ADC", "GAP", "REV", "FAST", "STALL", "UART", "STOP", "YAW", "BRAKE", "TIMEOUT", "SETTLE", "LOST", "LINE"};
+         const char *title = "TASK 1 A->B";
+-        if (app->route.motion == MOVE_TASK4 || (app->route.motion == MOVE_NONE && app->button.selected_motion == MOVE_TASK4)) title = "TASK 4 FOUR LAPS";
++        if (app->route.motion == MOVE_TASK4 || (app->route.motion == MOVE_NONE && app->button.selected_motion == MOVE_TASK4)) title = "TASK 4 ARC V2";
+         else if (app->route.motion == MOVE_TASK3 || (app->route.motion == MOVE_NONE && app->button.selected_motion == MOVE_TASK3)) title = "TASK 3 CAP V2";
+         else if (app->route.motion == MOVE_TASK2 || (app->route.motion == MOVE_NONE && app->button.selected_motion == MOVE_TASK2)) title = "TASK 2 ONE LAP";
+         else if (app->route.motion == MOVE_LINE || (app->route.motion == MOVE_NONE && app->button.selected_motion == MOVE_LINE)) title = "TEST HALF ARC";
+--- a/Core/Src/car_task4.c
++++ b/Core/Src/car_task4.c
+@@ -5,6 +5,8 @@
+ CarTask3Config CarTask4_Config(void)
+ {
+     CarTask3Config config = CarRoute_Task3Config();
++    config.arc_mmps = DPT_TASK4_ARC_MMPS;
++    config.arc_acceleration_mmps2 = DPT_TASK4_ARC_ACCEL_MMPS2;
+     config.laps = DPT_TASK4_LAPS;
+     config.deadline_ms = DPT_TASK4_TIMEOUT_MS;
+     return config;
+--- a/tools/tests/test_task4.c
++++ b/tools/tests/test_task4.c
+@@ -8,7 +8,7 @@
+  setup();line_inputs=15;hold();hold();hold();hold();
+  assert(app()->button.selected_motion==MOVE_TASK4 && app()->runtime.state!=RUNNING);
+  assert(app()->route.goal>20280 && app()->route.goal<20300);
+- assert(strcmp(oled_lines[0],"TASK 4 FOUR LAPS")==0);
++ assert(strcmp(oled_lines[0],"TASK 4 ARC V2")==0);
+ }
+ static void task4_start(void)
+ {
+@@ -93,6 +93,24 @@
+  uint32_t model_ms=target_follow_four(0);
+  assert(app()->runtime.state==DONE && app()->route.task3.completed_laps==4 && signals==17 && model_ms<160000U);
+  printf("IDEAL four-lap target-following schedule: %lu ms; hypothetical track=140mm, not field acceptance.\n",(unsigned long)model_ms);
++ /* Task4 alone gets a bounded slower arc demand; successful Task3 stays unchanged. */
++ assert(CarRoute_Task3Config().arc_mmps==200 && CarRoute_Task3Config().arc_acceleration_mmps2==100);
++ assert(CarTask4_Config().arc_mmps==160 && CarTask4_Config().arc_acceleration_mmps2==70);
++ for(unsigned completed=0;completed<2;completed++) {
++  task4_start();until_lap_phase(completed,T3_ARC);
++  app()->route.task3.phase_ms=ms-1000;line_inputs=11;
++  step(10,0,0);assert(fabsf(app()->route.base-120.7f)<.05f);
++  app()->route.task3.phase_ms=ms-2000;step(10,0,0);
++  assert(fabsf(app()->route.base-160)<.05f);
++  assert(fabsf(app()->route.targets[0]-108.8f)<.05f && fabsf(app()->route.targets[1]-211.2f)<.05f);
++  line_inputs=7;step(10,0,0); /* Extreme left black still caps right demand at224. */
++  assert(fabsf(app()->route.targets[0]-96)<.05f && fabsf(app()->route.targets[1]-224)<.05f);
++  assert(a>=0 && b<=0);
++  line_inputs=15;step(10,0,0);assert(a==0 && b==0 && app()->runtime.state==RUNNING);
++  for(unsigned j=0;j<10;j++)step(10,0,0);
++  assert(app()->runtime.state==LINE_LOST && app()->route.task3.fault==T3_LOST && app()->route.task3_trace.lost_seen);
++  assert(fabsf(app()->route.task3_trace.targets[1]-224)<.05f);
++ }
+  /* Three A joins must settle; moving wheels cannot advance the lap. */
+  task4_start();until_lap_phase(0,T3_FINAL_BRAKE);
+  for(unsigned k=0;k<10;k++)step(10,177,176);

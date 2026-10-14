@@ -1,0 +1,9 @@
+{
+  "backup": "/Users/mzh/Desktop/车车/output/固件备份/Sunward_串口优化前备份_2026-10-08_3fxiu9pp",
+  "uart_sources": [
+    "/Users/mzh/STM32Cube/Sunward/Core/Src/lab_uart_async.c"
+  ],
+  "rebuild_returncode": 0,
+  "hardware_downloaded": false,
+  "elf_sha256": "98ff9201744d371a8dbec45132e1a1c9cdd84f32a8f366f877b14f40de9e7886"
+}

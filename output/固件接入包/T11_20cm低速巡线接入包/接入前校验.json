@@ -1,0 +1,6 @@
+{
+  "Core/Src/dual_pi_test.c": "b95587dcf720ce697f763befd1cf1e4febbef92ce208c9b7da658beef8a80a9b",
+  "Core/Inc/dual_pi_test.h": "ca66e29c33808280a1c30205831c2cfe2c6d14404f4f461b0f18a9fc23ec0c7d",
+  "Core/Src/task_oled.c": "38acc09e01de03ce8afa73db6be22958f0de5a703f86fd4d9099ab3d91230b50",
+  "Core/Inc/task_oled.h": "aea4f21d7b20ce93aa310696cdd6d23bdc657debe578edb8572cc39442d5c368"
+}

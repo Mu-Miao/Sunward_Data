@@ -1,0 +1,101 @@
+--- a/Core/Src/car_task3.c
++++ b/Core/Src/car_task3.c
+@@ -262,18 +262,17 @@
+         if ((uint32_t)(i->now_ms - r->phase_ms) >= r->config.capture_timeout_ms ||
+             phase_travel > r->config.capture_limit_mm) fault(r, T3_EDGE);
+         else if (fabsf(wrap(target - i->yaw_deg)) > r->config.diagonal_tolerance_deg) fault(r, T3_HEADING);
+-        else if (i->centered) {
+-            o->reset_controllers = 1U;
+-            if (stable(r, 1, i->now_ms)) {
+-                phase(r, T3_ARC, i, o);
+-                /* Exclude vertex alignment/capture travel from arc progress. */
+-                r->leg_start_mm = i->distance_mm;
+-            }
+-        } else {
+-            stable(r, 0, i->now_ms);
+-            /* An off-centre but valid line is already feedback. Follow it
+-               toward the centre rather than driving past it on a fixed yaw.
+-               White/invalid input still uses the bounded tangent approach. */
++        else if (stable(r, i->line_valid, i->now_ms)) {
++            /* Contiguous 1..3 black channels are usable line feedback.
++               Requiring exactly the centred pair can time out on an arc
++               even while feedback is steering correctly toward the line. */
++            phase(r, T3_ARC, i, o);
++            /* Exclude vertex alignment/capture travel from arc progress. */
++            r->leg_start_mm = i->distance_mm;
++        } else {
++            /* Keep steering during the 30ms acquisition window; do not
++               freeze wheels at the first centred sample. Invalid patterns
++               reset stability and retain the bounded tangent approach. */
+             o->control = i->line_valid ? T3_FOLLOW_LINE : T3_HOLD_HEADING;
+             o->heading_deg = target;
+             o->base_mmps = r->config.capture_mmps;
+--- a/Core/Src/car_ui.c
++++ b/Core/Src/car_ui.c
+@@ -10,7 +10,7 @@
+         static const char *const states[] = {"IDLE", "RUN", "DONE", "OFF", "LOW",
+             "ADC", "GAP", "REV", "FAST", "STALL", "UART", "STOP", "YAW", "BRAKE", "TIMEOUT", "SETTLE", "LOST", "LINE"};
+         const char *title = "TASK 1 A->B";
+-        if (app->route.motion == MOVE_TASK3 || (app->route.motion == MOVE_NONE && app->button.selected_motion == MOVE_TASK3)) title = "TASK 3 SNAP V1";
++        if (app->route.motion == MOVE_TASK3 || (app->route.motion == MOVE_NONE && app->button.selected_motion == MOVE_TASK3)) title = "TASK 3 CAP V2";
+         else if (app->route.motion == MOVE_TASK2 || (app->route.motion == MOVE_NONE && app->button.selected_motion == MOVE_TASK2)) title = "TASK 2 ONE LAP";
+         else if (app->route.motion == MOVE_LINE || (app->route.motion == MOVE_NONE && app->button.selected_motion == MOVE_LINE)) title = "TEST HALF ARC";
+         else if (app->route.motion == MOVE_DISTANCE) title = "TEST GO20";
+--- a/tools/tests/test_task3.c
++++ b/tools/tests/test_task3.c
+@@ -111,7 +111,7 @@
+  assert(app()->runtime.state==DONE && app()->route.task3.phase==T3_DONE && signals==5 && a==0 && b==0);
+  assert(app()->route.elapsed_ms<40000 && app()->route.leg==3U && rp[0]==wp[0] && wp[1]==0);
+  for(unsigned i=0;i<50;i++)step(10,0,0);
+- assert(signals==5 && !app()->signal.active && strcmp(oled_lines[0],"TASK 3 SNAP V1")==0);
++ assert(signals==5 && !app()->signal.active && strcmp(oled_lines[0],"TASK 3 CAP V2")==0);
+  assert(strstr(oled_lines[2],"DONE DA T"));for(unsigned i=0;i<4;i++)assert(strlen(oled_lines[i])<=21);
+  /* Task-specific faster schedule, with unchanged half-circle speed/deadline. */
+  assert(CarRoute_Task3Config().diagonal_mmps==240 && CarRoute_Task3Config().arc_mmps==200);
+@@ -198,6 +198,46 @@
+  assert(app()->route.task3.phase==T3_CAPTURE && app()->route.task3.leg==3U);
+  line_inputs=11;step(10,0,0);assert(app()->route.targets[0]<app()->route.targets[1] && app()->route.targets[0]>0);
+  line_inputs=9;for(unsigned i=0;i<4;i++)step(10,0,0);assert(app()->route.task3.phase==T3_ARC);
++ /* D F6/S1308/Y173: valid single/three black channels need not become centred pairs. */
++ for(unsigned leg=1;leg<=3;leg+=2) {
++  for(unsigned pattern=0;pattern<2;pattern++) {
++   task3_start();
++   for(unsigned k=0;k<3500 && app()->runtime.state==RUNNING &&
++       !(app()->route.task3.phase==T3_CAPTURE && app()->route.task3.leg==leg);k++)step_route();
++   assert(app()->runtime.state==RUNNING && app()->route.task3.phase==T3_CAPTURE);
++   float origin=app()->route.task3.phase_start_mm;
++   app()->heading.angle=join_target()+(leg==3?-7:7);
++   line_inputs=pattern?8:13; /* Three contiguous black, or one black. Neither is centred. */
++   for(unsigned k=0;k<3;k++) {
++    step(10,150,145);
++    assert(app()->runtime.state==RUNNING && app()->route.task3.phase==T3_CAPTURE);
++    assert(app()->route.targets[0]>0 && app()->route.targets[1]>0);
++    assert(app()->route.targets[0]>app()->route.targets[1]);
++   }
++   step(10,150,145);
++   assert(app()->runtime.state==RUNNING && app()->route.task3.phase==T3_ARC);
++   assert(fabsf(progress())<.01f && app()->route.task3.leg_start_mm>origin);
++   step(10,150,145);assert(app()->runtime.state==RUNNING && app()->route.targets[0]>0 && app()->route.targets[1]>0);
++  }
++ }
++ /* Loss of valid pattern resets acquisition stability; fresh 30ms is required. */
++ task3_start();reach_phase(T3_CAPTURE);line_inputs=13;
++ step(10,150,145);step(10,150,145);step(10,150,145);
++ line_inputs=15;step(10,150,145);assert(app()->route.task3.phase==T3_CAPTURE && !app()->route.task3.edge_seen);
++ line_inputs=13;for(unsigned k=0;k<3;k++) {step(10,150,145);assert(app()->route.task3.phase==T3_CAPTURE);}
++ step(10,150,145);assert(app()->route.task3.phase==T3_ARC);
++ /* All-black/non-contiguous patterns never acquire an arc. */
++ for(unsigned k=0;k<2;k++) {
++  task3_start();reach_phase(T3_CAPTURE);line_inputs=k?5:0;
++  for(unsigned j=0;j<5;j++)step(10,0,0);
++  assert(app()->route.task3.phase==T3_CAPTURE && !app()->route.task3.edge_seen);
++ }
++ /* A valid line still cannot override capture timeout or heading bounds. */
++ task3_start();reach_phase(T3_CAPTURE);line_inputs=13;
++ app()->route.task3.phase_ms=ms-app()->route.task3.config.capture_timeout_ms;
++ step(10,0,0);assert(app()->runtime.state==LINE_BAD && app()->route.task3.fault==T3_EDGE && a==0 && b==0);
++ task3_start();reach_phase(T3_CAPTURE);line_inputs=13;app()->heading.angle=join_target()+21;
++ step(10,0,0);assert(app()->runtime.state==YAW_BAD && app()->route.task3.fault==T3_HEADING && a==0 && b==0);
+  /* Preserve specific app protection reasons and cancel task core in each phase. */
+  for(unsigned k=0;k<12;k++) {
+   task3_start();if(k>=6)reach_phase(T3_ARC);

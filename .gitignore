@@ -1,0 +1,57 @@
+# 系统、编辑器个人状态及 Python 缓存
+.DS_Store
+.obsidian/
+.idea/
+__pycache__/
+*.pyc
+
+# 可重新生成的构建目录及中间文件
+build/
+cmake-build-*/
+OBJ/
+Objects/
+Listings/
+*.o
+*.obj
+*.elf
+*.axf
+*.map
+*.lnp
+*.objlist
+*.hex
+*.bin
+
+# 历史备份、临时工作区与个人调试原始记录
+/归档/
+/output/固件备份/
+修复前备份/
+备份_RTS修正前/
+接收记录/
+/output/调试工具/WASD键盘控制工具/c10b-wasd
+
+# 历史接入包保留说明、补丁和测试，完整工程仅保留最新 T29
+/output/固件接入包/*/staged_Sunward/
+!/output/固件接入包/T29_任务三四转向余量包/staged_Sunward/
+!/output/固件接入包/T29_任务三四转向余量包/Sunward.hex
+
+# 当前 V19 工程与交付保留；旧模型、重复项目 ZIP 和渲染中间数据忽略
+/output/车架模型/历史版本/
+/output/车架模型/打印交付/历史版本/
+/output/车架模型/项目压缩包/
+/output/车架模型/设计演示/
+/output/车架模型/车架建模_v19/*_mesh.json
+/output/车架模型/车架建模_v19/preview_meshes.json
+
+# 厂家安装包与重复压缩包；当前打印 ZIP 作为便捷交付保留
+*.exe
+*.msi
+*.dmg
+*.pkg
+*.zip
+*.7z
+*.rar
+!/output/车架模型/打印交付/发给打印同学_v19.zip
+/资料/厂家小车套件/小车/9.软件与驱动/
+
+# 本机已安装工程的构建参数，可由工程配置重新生成
+/output/固件接入包/*/installed_builder.params

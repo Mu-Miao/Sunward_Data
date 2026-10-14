@@ -1,0 +1,108 @@
+--- a/Core/Inc/car_config.h
++++ b/Core/Inc/car_config.h
+@@ -70,10 +70,13 @@
+ #define DPT_TASK3_SPAN_MM 1000.0f
+ #define DPT_TASK3_RADIUS_MM 400.0f
+ #define DPT_TASK3_ARC_MM 1256.0f
+-#define DPT_TASK3_DIAGONAL_MMPS 200.0f
++#define DPT_TASK3_DIAGONAL_MMPS 240.0f
+ #define DPT_TASK3_ARC_MMPS 200.0f
+ #define DPT_TASK3_START_MMPS 50.0f
+-#define DPT_TASK3_TURN_MMPS 60.0f
++#define DPT_TASK3_ACCEL_MMPS2 150.0f
++#define DPT_TASK3_APPROACH_MM 100.0f
++#define DPT_TASK3_MIN_MMPS 60.0f /* Capture still uses its own 50mm/s. */
++#define DPT_TASK3_TURN_MMPS 80.0f
+ #define DPT_TASK3_CAPTURE_MMPS 50.0f
+ #define DPT_TASK3_TIMEOUT_MS 40000U
+ #define DPT_TASK3_ENTRY_WINDOW_MM 120.0f
+--- a/Core/Src/car_task3.c
++++ b/Core/Src/car_task3.c
+@@ -27,7 +27,7 @@
+         c->entry_window_mm < diagonal * 0.5f && c->exit_window_mm < c->arc_mm * 0.5f &&
+         c->approach_mm < diagonal && c->diagonal_mmps <= 250.0f && c->arc_mmps <= 250.0f &&
+         c->start_mmps <= c->diagonal_mmps && c->start_mmps <= c->arc_mmps &&
+-        c->minimum_mmps <= c->start_mmps && c->turn_mmps <= 100.0f && c->capture_mmps <= 100.0f &&
++        c->minimum_mmps <= c->diagonal_mmps && c->minimum_mmps <= c->arc_mmps && c->turn_mmps <= 100.0f && c->capture_mmps <= 100.0f &&
+         c->diagonal_tolerance_deg <= 20.0f && c->arc_tolerance_deg <= 20.0f &&
+         c->align_tolerance_deg <= 5.0f && bounded_time(c->deadline_ms) &&
+         bounded_time(c->settle_ms) && bounded_time(c->brake_timeout_ms) &&
+--- a/Core/Src/car_route.c
++++ b/Core/Src/car_route.c
+@@ -10,7 +10,8 @@
+     c.span_mm = DPT_TASK3_SPAN_MM; c.radius_mm = DPT_TASK3_RADIUS_MM;
+     c.arc_mm = DPT_TASK3_ARC_MM;
+     c.diagonal_mmps = DPT_TASK3_DIAGONAL_MMPS; c.arc_mmps = DPT_TASK3_ARC_MMPS;
+-    c.start_mmps = DPT_TASK3_START_MMPS; c.acceleration_mmps2 = DPT_ROUTE_ACCEL_MMPS2;
++    c.start_mmps = DPT_TASK3_START_MMPS; c.acceleration_mmps2 = DPT_TASK3_ACCEL_MMPS2;
++    c.approach_mm = DPT_TASK3_APPROACH_MM; c.minimum_mmps = DPT_TASK3_MIN_MMPS;
+     c.turn_mmps = DPT_TASK3_TURN_MMPS; c.capture_mmps = DPT_TASK3_CAPTURE_MMPS;
+     c.deadline_ms = DPT_TASK3_TIMEOUT_MS;
+     c.entry_window_mm = DPT_TASK3_ENTRY_WINDOW_MM; c.exit_window_mm = DPT_TASK3_EXIT_WINDOW_MM;
+--- a/tools/tests/test_task3.c
++++ b/tools/tests/test_task3.c
+@@ -55,6 +55,43 @@
+   if(app()->route.targets[1]==0)assert(app()->wheel.items[1].command==0);
+  }
+ }
++/* Ideal target-following encoder/yaw inputs, with a hypothetical 140mm track.
++   This evaluates the schedule; it is not a motor/tyre/track dynamics model. */
++static uint32_t target_follow_lap(int prior_profile)
++{
++ task3_start();
++ if(prior_profile) {
++  app()->route.task3.config.diagonal_mmps=200;
++  app()->route.task3.config.turn_mmps=60;
++  app()->route.task3.config.acceleration_mmps2=100;
++  app()->route.task3.config.approach_mm=150;
++  app()->route.task3.config.minimum_mmps=40;
++ }
++ float residue[2]={0,0};
++ for(unsigned k=0;k<4500 && app()->runtime.state==RUNNING;k++) {
++  CarTask3 *t=&app()->route.task3;float p=progress();
++  if(t->phase==T3_DIAGONAL) {
++   app()->heading.angle=CarMath_WrapDegrees(t->start_heading_deg+(t->leg==2U?180+2*t->diagonal_angle_deg:0));
++   line_inputs=p>=t->diagonal_mm?9:15;
++  } else if(t->phase==T3_ARC) {
++   line_inputs=p>=t->config.arc_mm?15:9;
++   app()->heading.angle=CarMath_WrapDegrees(t->start_heading_deg+t->diagonal_angle_deg+
++     (t->leg==1U?fminf(p/t->config.arc_mm,1)*180:180-fminf(p/t->config.arc_mm,1)*180));
++  } else if(t->phase==T3_CAPTURE) line_inputs=9;
++  else if(t->phase==T3_ALIGN || t->phase==T3_START_ALIGN)
++   app()->heading.angle=CarMath_WrapDegrees(app()->heading.angle+(app()->route.targets[1]-app()->route.targets[0])*.01f/140*57.2957795131f);
++  int counts[2];
++  for(unsigned j=0;j<2;j++) {
++   float cpr=j?DPT_RIGHT_CPR:DPT_LEFT_CPR;
++   assert(app()->route.targets[j]>=0 && app()->route.targets[j]<=280.01f);
++   residue[j]+=app()->route.targets[j]*.01f*cpr/(DPT_CIRC_M*1000);
++   counts[j]=(int)residue[j];residue[j]-=counts[j];
++  }
++  step(10,counts[0],counts[1]);assert(a>=0&&b<=0);
++ }
++ assert(app()->runtime.state==DONE || app()->runtime.state==TIMEOUT);
++ return app()->route.elapsed_ms;
++}
+ static void reach_phase(CarTask3Phase phase)
+ {
+  for(unsigned i=0;i<2500&&app()->runtime.state==RUNNING&&app()->route.task3.phase!=phase;i++)step_route();
+@@ -75,6 +112,20 @@
+  for(unsigned i=0;i<50;i++)step(10,0,0);
+  assert(signals==5 && !app()->signal.active && strcmp(oled_lines[0],"TASK 3 AUTO START")==0);
+  assert(strstr(oled_lines[2],"DONE DA T"));for(unsigned i=0;i<4;i++)assert(strlen(oled_lines[i])<=21);
++ /* Task-specific faster schedule, with unchanged half-circle speed/deadline. */
++ assert(CarRoute_Task3Config().diagonal_mmps==240 && CarRoute_Task3Config().arc_mmps==200);
++ assert(CarRoute_Task3Config().turn_mmps==80 && CarRoute_Task3Config().capture_mmps==50);
++ assert(CarRoute_Task3Config().deadline_ms==40000U);
++ uint32_t old_schedule=target_follow_lap(1),new_schedule=target_follow_lap(0);
++ assert(app()->runtime.state==DONE && signals==5 && new_schedule<36000U);
++ assert(new_schedule+4000U<old_schedule);
++ printf("IDEAL target-following schedule: prior=%lu ms revised=%lu ms; hypothetical track=140mm, not field acceptance.\n",(unsigned long)old_schedule,(unsigned long)new_schedule);
++ /* Exact observed DA 993mm at 40 seconds remains a timeout, never false DONE. */
++ task3_start();for(unsigned k=0;k<3500&&app()->runtime.state==RUNNING && !(app()->route.task3.phase==T3_ARC && app()->route.task3.leg==3);k++)step_route();
++ assert(app()->route.task3.phase==T3_ARC && app()->route.task3.leg==3);
++ app()->route.distance_mm[0]=app()->route.distance_mm[1]=app()->route.task3.leg_start_mm+993;
++ app()->route.start_ms=ms-40000U;step(10,0,0);
++ assert(app()->runtime.state==TIMEOUT && app()->route.task3.fault==T3_TIMEOUT && fabsf(progress()-993)<.01f && a==0 && b==0);
+  /* Busy new button press cancels; held press cannot restart. */
+  task3_start();release_key();press_key();assert(app()->runtime.state==STOPPED && a==0 && b==0 && app()->route.task3.phase==T3_FAULT);
+  for(unsigned i=0;i<200;i++)step(10,0,0);assert(app()->runtime.state==STOPPED);

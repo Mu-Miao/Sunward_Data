@@ -1,0 +1,1 @@
+PASS: 3s automatic timeout, PI growth, upper/lower antiwindup, STOP/restart integral reset; no auto start; exact commands; left only (A=0, B negative); limit; STOP/OFF/LOW/ADC/GAP/REV/FAST/STALL/timeout/UART stop; counter/tick/DWT wrap

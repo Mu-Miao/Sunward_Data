@@ -1,0 +1,34 @@
+{
+  "backup": "/Users/mzh/Desktop/车车/output/固件备份/Sunward_巡线纠偏前备份_2026-10-11_voipc8km",
+  "source_files_changed": [
+    "Core/Src/dual_pi_test.c",
+    "Core/Inc/dual_pi_test.h"
+  ],
+  "hardware_downloaded": false,
+  "physical_line_test_done": false,
+  "polarity": "black=0 / white=1; user rechecked white1111 centre1001",
+  "physical_left_to_right": [
+    "O4",
+    "O3",
+    "O2",
+    "O1"
+  ],
+  "motion": "LF20: 200mm / cruise60mmps / start40mmps / max10s",
+  "selection": "OFF LF20! selects; OFF GO100! restores; reboot defaults GO100",
+  "line_heading": "MPU health monitored; straight heading hold/20deg guard not applied to line turning",
+  "invalid_line": "zero motor command immediately on sample; continuous100ms becomes LOST/LINE fault",
+  "unchanged_files_checked": [
+    "Core/Src/task_oled.c",
+    "Core/Inc/task_oled.h",
+    "Core/Src/main.c",
+    "Core/Src/gpio.c",
+    "Core/Src/mpu6050.c",
+    "Core/Src/soft_i2c.c",
+    "Core/Src/lab_uart_async.c",
+    "Sunward.ioc",
+    ".eide/eide.yml",
+    "build/Debug/builder.params"
+  ],
+  "build_returncode": 0,
+  "hex_sha256": "60555c276885124a1730ad5dd717d1fc10514f5c9b0d48e891ce02d1e163be94"
+}

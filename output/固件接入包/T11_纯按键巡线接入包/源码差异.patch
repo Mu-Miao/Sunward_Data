@@ -1,0 +1,189 @@
+--- a/Core/Src/dual_pi_test.c
++++ b/Core/Src/dual_pi_test.c
+@@ -20,10 +20,12 @@
+ static float distance_mm[2], distance_base, distance_goal, distance_cruise, distance_slow;
+ static uint8_t completion_signal;
+ static uint32_t signal_ms;
+-typedef enum { KEY_NONE, KEY_CAL, KEY_START, KEY_STOP, KEY_WAIT, KEY_BLOCK } KeyAction;
++typedef enum { KEY_NONE, KEY_CAL, KEY_START, KEY_STOP, KEY_WAIT, KEY_BLOCK, KEY_MODE } KeyAction;
++typedef enum { KEY_EVENT_NONE, KEY_EVENT_SHORT, KEY_EVENT_HOLD } KeyEvent;
+ static KeyAction key_action;
+ static uint8_t key_raw, key_stable, key_armed, key_press_enabled, ready_led_on;
+-static uint32_t key_change_ms, key_events, key_log_ms;
++static uint32_t key_change_ms, key_events, key_log_ms, key_hold_ms;
++static uint8_t key_off_pending, key_press_busy;
+ static uint32_t oled_render_ms, oled_log_ms, line_log_ms;
+ static uint8_t line_raw[4], line_black[4], line_valid, line_count;
+ static uint8_t line_center_seen, line_center_ready, line_invalid_seen;
+@@ -68,7 +70,7 @@
+ static uint32_t adc_ms, log_ms, on_ms, bat_raw, dt_us;
+ static char fault_wheel;
+ static const char banner[] =
+-    "DPI OFF KEY=CAL LF20!=select GO100!=select; READY+ON KEY=start; busy KEY=STOP; LF20!/GO20!/GO100!/GO!/RUN!/F!/B!/L!/R!/STOP!/CAL! V/TIME\r\n";
++    "DPI KEY_U OFF:short=CAL,long1.5s=mode; READY+ON:press=start; busy:press=STOP; LF20!/GO100!/GO20!/GO!/RUN!/F!/B!/L!/R!/STOP!/CAL! V/TIME\r\n";
+ 
+ static void clear_controllers(void)
+ {
+@@ -114,25 +116,66 @@
+     }
+ }
+ 
+-/* Only a new stable press is an event. A held key never queues a start.
+-   Changing enable while held invalidates that press until a stable release. */
+-static int key_poll(uint32_t now, int enabled)
++/* OFF idle short press is decided at stable RELEASE, so a selection hold
++   cannot start calibration first. ON and busy presses still act at 30ms.
++   Boot-held and enable changes while held require a fresh stable release. */
++static KeyEvent key_poll(uint32_t now, int enabled, int busy)
+ {
+     uint8_t raw = HAL_GPIO_ReadPin(GPIOA, GPIO_PIN_0) == GPIO_PIN_SET;
+     if (raw != key_raw) {
+         key_raw = raw;
+         key_change_ms = now;
+-        if (raw) key_press_enabled = enabled != 0;
+-    }
+-    if (raw && key_press_enabled != (enabled != 0)) key_armed = 0;
+-    if ((uint32_t)(now - key_change_ms) < DPT_KEY_DEBOUNCE_MS) return 0;
+-    if (!raw) { key_stable = 0; key_armed = 1; return 0; }
+-    if (key_stable) return 0;
+-    key_stable = 1;
+-    if (!key_armed) return 0;
+-    key_armed = 0;
+-    ++key_events;
+-    return 1;
++        if (raw) { key_press_enabled = enabled != 0; key_press_busy = busy != 0; }
++    }
++    if (raw && key_press_enabled != (enabled != 0)) {
++        key_armed = key_off_pending = 0U;
++    }
++    if ((uint32_t)(now - key_change_ms) < DPT_KEY_DEBOUNCE_MS) return KEY_EVENT_NONE;
++    if (!raw) {
++        uint8_t short_off = key_off_pending && !enabled;
++        key_stable = key_off_pending = 0U;
++        key_armed = 1U;
++        if (short_off) { ++key_events; return KEY_EVENT_SHORT; }
++        return KEY_EVENT_NONE;
++    }
++    if (!key_stable) {
++        key_stable = 1U;
++        if (!key_armed) return KEY_EVENT_NONE;
++        key_armed = 0U;
++        if (!enabled && !busy && !key_press_busy) {
++            key_off_pending = 1U;
++            key_hold_ms = now;
++            return KEY_EVENT_NONE;
++        }
++        ++key_events;
++        return KEY_EVENT_SHORT;
++    }
++    if (key_off_pending) {
++        if (enabled || busy) key_off_pending = 0U;
++        else if ((uint32_t)(now - key_hold_ms) >= DPT_KEY_HOLD_MS) {
++            key_off_pending = 0U;
++            ++key_events;
++            return KEY_EVENT_HOLD;
++        }
++    }
++    return KEY_EVENT_NONE;
++}
++
++/* Selection never stores a movement request; both choices have their own title. */
++static void select_key_motion(Motion selected, uint32_t now)
++{
++    drive(0, 0);
++    clear_controllers();
++    signal_set(0);
++    key_motion = selected;
++    motion = MOVE_NONE;
++    distance_tracking = 0U;
++    distance_mm[LEFT] = distance_mm[RIGHT] = 0.0f;
++    distance_goal = key_motion == MOVE_LINE ? DPT_LINE_MM : DPT_ROUTE_MM;
++    line_center_seen = line_center_ready = line_invalid_seen = 0U;
++    line_diff = 0.0f;
++    key_log_ms = now - 1000U;
++    oled_render_ms = now - 200U;
+ }
+ 
+ /* LED1 reports calibration without a computer. Completion owns both LEDs.
+@@ -362,6 +405,7 @@
+         left_encoder == right_encoder || battery_adc == NULL ||
+         DPT_MAX_CMD <= 0 || DPT_MAX_CMD > 1800 ||
+         DPT_TARGET_MMPS <= 0.0f || DPT_TARGET_MMPS > 100.0f ||
++        DPT_KEY_HOLD_MS < 1000U || DPT_KEY_HOLD_MS > 3000U ||
+         DPT_LINE_BLACK_LEVEL > 1U || DPT_LINE_MM != 200.0f ||
+         DPT_LINE_CRUISE_MMPS < 40.0f || DPT_LINE_CRUISE_MMPS > 60.0f ||
+         DPT_LINE_START_MMPS < 40.0f || DPT_LINE_START_MMPS > DPT_LINE_CRUISE_MMPS ||
+@@ -420,6 +464,8 @@
+     key_armed = 0; /* Even at boot, require 30ms stable release first. */
+     key_change_ms = key_log_ms = now;
+     key_events = 0U;
++    key_off_pending = key_press_busy = 0U;
++    key_hold_ms = now;
+     key_action = KEY_NONE;
+     oled_render_ms = now - 200U;
+     oled_log_ms = line_log_ms = now;
+@@ -617,7 +663,7 @@
+     uint32_t now = HAL_GetTick();
+     int enabled = HAL_GPIO_ReadPin(GPIOC, GPIO_PIN_13) == GPIO_PIN_RESET;
+     uint8_t was_busy = state == RUNNING || state == BRAKING || yaw_phase == Y_WARM || yaw_phase == Y_CAL;
+-    int key_pressed = key_poll(now, enabled);
++    KeyEvent key_pressed = key_poll(now, enabled, was_busy);
+     if (!enabled) {
+         on_seen = 0;
+         if (completion_signal) signal_set(0);
+@@ -676,17 +722,10 @@
+        Serial STOP/RX errors or a busy press cannot select or queue a restart. */
+     if (!enabled && !was_busy && !stop_requested &&
+         (requested == MOVE_LINE || requested == MOVE_ROUTE)) {
+-        key_motion = requested;
+-        motion = MOVE_NONE;
+-        distance_tracking = 0U;
+-        distance_mm[LEFT] = distance_mm[RIGHT] = 0.0f;
+-        distance_goal = key_motion == MOVE_LINE ? DPT_LINE_MM : DPT_ROUTE_MM;
+-        line_center_seen = line_center_ready = line_invalid_seen = 0U;
+-        line_diff = 0.0f;
+-        key_log_ms = now - 1000U;
+-        oled_render_ms = now - 200U;
++        select_key_motion(requested, now);
+         requested = MOVE_NONE;
+     }
++    if (stop_requested) key_off_pending = 0U;
+     if (key_pressed) {
+         key_action = KEY_BLOCK;
+         /* Both serial ports have been scanned: STOP/RX fault has priority. */
+@@ -695,10 +734,14 @@
+                 stop(STOPPED, '-');
+                 stop_requested = 1;
+                 key_action = KEY_STOP;
+-            } else if (!enabled && yaw_available) {
++            } else if (key_pressed == KEY_EVENT_HOLD && !enabled && !cal_requested) {
++                select_key_motion(key_motion == MOVE_ROUTE ? MOVE_LINE : MOVE_ROUTE, now);
++                requested = MOVE_NONE;
++                key_action = KEY_MODE;
++            } else if (key_pressed == KEY_EVENT_SHORT && !enabled && yaw_available) {
+                 cal_requested = 1;
+                 key_action = KEY_CAL;
+-            } else if (enabled && yaw_phase == Y_READY && !cal_requested) {
++            } else if (key_pressed == KEY_EVENT_SHORT && enabled && yaw_phase == Y_READY && !cal_requested) {
+                 requested = key_motion;
+                 key_action = KEY_START;
+             } else key_action = KEY_WAIT;
+@@ -870,7 +913,7 @@
+     }
+     key_indicator(now);
+     if ((uint32_t)(now - key_log_ms) >= 1000U) {
+-        static const char *const actions[] = {"-", "CAL", "START", "STOP", "WAIT", "BLOCK"};
++        static const char *const actions[] = {"-", "CAL", "START", "STOP", "WAIT", "BLOCK", "MODE"};
+         char msg[96];
+         int n = snprintf(msg, sizeof msg, "KEY EN=%u RAW=%u ARM=%u EVT=%lu ACT=%s %s\r\n",
+             (unsigned)enabled, (unsigned)key_raw, (unsigned)key_armed,
+--- a/Core/Inc/dual_pi_test.h
++++ b/Core/Inc/dual_pi_test.h
+@@ -45,6 +45,7 @@
+ #define DPT_ROUTE_SIGNAL_MS 500U
+ /* C10B KEY_U: PA0 active high, stable release required before each press. */
+ #define DPT_KEY_DEBOUNCE_MS 30U
++#define DPT_KEY_HOLD_MS 1500U /* OFF idle only; one selection until stable release. */
+ /* LF04 field correction: raw black=0, white=1; physical L->R O4/O3/O2/O1.
+    Short direction trial only; these gains are not field-accepted arc tuning. */
+ #define DPT_LINE_BLACK_LEVEL 0U

@@ -1,0 +1,578 @@
+--- a/Core/Inc/car_config.h
++++ b/Core/Inc/car_config.h
+@@ -86,9 +86,19 @@
+ #define DPT_TASK3_CAPTURE_LIMIT_MM 60.0f
+ #define DPT_TASK3_TURN_TIMEOUT_MS 4000U
+ #define DPT_TASK3_CAPTURE_TIMEOUT_MS 2000U
++/* 任务三、四受限寻线初值；车身投影是否仍覆盖黑线必须实车确认。 */
++#define DPT_TASK3_WHITE_SEEK_MS 300U
++#define DPT_TASK3_WHITE_SEEK_MM 20.0f
++#define DPT_TASK3_WHITE_SEEK_DEG 12.0f
++#define DPT_TASK3_SEEK_MMPS 40.0f
++#define DPT_TASK3_VERTEX_SEEK_MS 3000U
++#define DPT_TASK3_VERTEX_SEEK_MM 80.0f
++#define DPT_TASK3_TURN_SLOW_DEG 15.0f
++#define DPT_TASK3_TURN_MIN_MMPS 35.0f
+ /* 任务四沿用任务三的几何和速度参数；以下时限用于故障保护。 */
+ #define DPT_TASK4_LAP_WATCHDOG_MS 80000U
+-/* 任务四短暂失线时保持零输出，最多等待 200 毫秒；恢复需连续有效 30 毫秒。
++/* 任务四未授权寻线的无效读数保持零输出，最多等待 200 毫秒。
++ * 已授权的全白桥接单独使用上方 300 毫秒预算；恢复需连续有效 30 毫秒。
+  * 下列数值为待实车验证的容错初值，不改变任务三和全局 PI 标定。 */
+ #define DPT_TASK4_LOST_MS 200U
+ #define DPT_TASK4_RECOVERY_MS 30U
+--- a/Core/Inc/car_task3.h
++++ b/Core/Inc/car_task3.h
+@@ -5,11 +5,11 @@
+ /* 仅在主循环调用的单圈路线核心，不依赖 HAL、PWM、GPIO、串口或全局状态。
+  * 左转角度增加；启动前放在 A 点朝 B，由陀螺仪自动对准 AC。 */
+ typedef enum { T3_IDLE, T3_DIAGONAL, T3_VERTEX_BRAKE, T3_ALIGN,
+-    T3_CAPTURE, T3_ARC, T3_FINAL_BRAKE, T3_DONE, T3_FAULT, T3_START_ALIGN, T3_START_SETTLE } CarTask3Phase;
++    T3_CAPTURE, T3_ARC, T3_FINAL_BRAKE, T3_DONE, T3_FAULT, T3_START_ALIGN, T3_START_SETTLE, T3_ALIGN_SETTLE, T3_VERTEX_SEEK } CarTask3Phase;
+ typedef enum { T3_OK, T3_CONFIG, T3_ABORT, T3_SENSOR, T3_TIMEOUT,
+     T3_HEADING, T3_EDGE, T3_LOST, T3_TURN, T3_SETTLE, T3_DISTANCE } CarTask3Fault;
+ typedef enum { T3_HALT, T3_HOLD_HEADING, T3_TURN_FORWARD,
+-    T3_FOLLOW_LINE } CarTask3Control;
++    T3_FOLLOW_LINE, T3_SEEK_LINE } CarTask3Control;
+ typedef enum { T3_NO_POINT, T3_POINT_A, T3_POINT_B,
+     T3_POINT_C, T3_POINT_D } CarTask3Point;
+ 
+@@ -24,7 +24,9 @@
+     float diagonal_tolerance_deg, arc_tolerance_deg, align_tolerance_deg;
+     uint32_t deadline_ms, settle_ms, brake_timeout_ms, align_timeout_ms;
+     uint32_t capture_timeout_ms, debounce_ms, lost_ms, sample_max_age_ms;
+-    uint32_t recovery_ms; /* 0 沿用任务三；非零时失线恢复必须连续有效，原失线预算不重置。 */
++    uint32_t white_seek_ms, vertex_seek_ms; /* 0 关闭对应恢复动作。 */
++    float white_seek_mm, white_seek_deg, seek_mmps, vertex_seek_mm;
++    uint32_t recovery_ms; /* 0 保留旧的逐帧恢复；非零时需连续有效，原失线预算不重置。 */
+ } CarTask3Config;
+ 
+ typedef struct {
+@@ -51,7 +53,9 @@
+     uint8_t edge_seen, settled_seen, lost_seen, pending_start_signal;
+     uint32_t start_ms, phase_ms, edge_ms, settled_ms, lost_start_ms;
+     uint32_t previous_ms, elapsed_ms, start_settle_ms;
+-    uint8_t recovery_seen;
++    uint8_t recovery_seen, arc_valid_seen, loss_seek, seek_aligned, resume_active;
++    uint32_t seek_forward_ms, resume_ms;
++    float lost_start_mm, lost_yaw_deg, seek_forward_mm;
+     uint32_t recovery_start_ms;
+     float diagonal_mm, diagonal_angle_deg, start_heading_deg;
+     float leg_start_mm, phase_start_mm;
+--- a/Core/Inc/car_task4.h
++++ b/Core/Inc/car_task4.h
+@@ -9,7 +9,7 @@
+     uint32_t resume_ms; /* 失线恢复加速的独立起点，不重置阶段、里程及总超时。 */
+     float ac_reference_deg; /* 首次启动保存的 AC 参考角，四圈始终共用。 */
+ } CarTask4;
+-/* 管理四圈流程及恢复加速；复用单圈核心，任务四单独启用失线确认。 */
++/* 管理四圈流程及恢复加速；复用任务三、四共用的单圈与受限寻线核心。 */
+ CarTask3Config CarTask4_Config(void);
+ int CarTask4_Start(CarTask4 *task, CarTask3 *lap,
+     const CarTask3Config *config, const CarTask3Input *input);
+--- a/Core/Src/car_route.c
++++ b/Core/Src/car_route.c
+@@ -19,6 +19,11 @@
+     c.entry_window_mm = DPT_TASK3_ENTRY_WINDOW_MM; c.exit_window_mm = DPT_TASK3_EXIT_WINDOW_MM;
+     c.turn_travel_limit_mm = DPT_TASK3_TURN_LIMIT_MM; c.capture_limit_mm = DPT_TASK3_CAPTURE_LIMIT_MM;
+     c.align_timeout_ms = DPT_TASK3_TURN_TIMEOUT_MS; c.capture_timeout_ms = DPT_TASK3_CAPTURE_TIMEOUT_MS;
++    c.white_seek_ms = DPT_TASK3_WHITE_SEEK_MS;
++    c.white_seek_mm = DPT_TASK3_WHITE_SEEK_MM; c.white_seek_deg = DPT_TASK3_WHITE_SEEK_DEG;
++    c.seek_mmps = DPT_TASK3_SEEK_MMPS;
++    c.vertex_seek_ms = DPT_TASK3_VERTEX_SEEK_MS; c.vertex_seek_mm = DPT_TASK3_VERTEX_SEEK_MM;
++    c.recovery_ms = 30U;
+     c.settle_ms = DPT_DISTANCE_SETTLE_MS; c.brake_timeout_ms = DPT_DISTANCE_BRAKE_TIMEOUT_MS;
+     return c;
+ }
+@@ -242,7 +247,7 @@
+             CarSignal_Set(app, 1); /* 最终在 A 点停稳后触发一次声光提示。 */
+         } else CarTask3Port_Apply(app, &output, now);
+         if (app->runtime.state == RUNNING && app->route.task3.phase == T3_ARC && input.line_valid &&
+-            (app->route.motion != MOVE_TASK4 || !app->route.task3.lost_seen)) {
++            !app->route.task3.lost_seen) {
+             app->route.task3_trace.valid_seen = 1U;
+             app->route.task3_trace.lost_seen = 0U; /* 短暂失线恢复后，下一次失线重新建立快照窗口。 */
+             memcpy(app->route.task3_trace.valid_raw, app->line.raw, 4U);
+--- a/Core/Src/car_task3.c
++++ b/Core/Src/car_task3.c
+@@ -13,6 +13,15 @@
+ static int config_valid(const CarTask3Config *c)
+ {
+     if (c->start_from_ab > 1U) return 0;
++    if (c->white_seek_ms != 0U &&
++        (c->white_seek_ms < 30U || c->white_seek_ms > 300U ||
++         !positive(c->white_seek_mm) || c->white_seek_mm > 20.0f ||
++         !positive(c->white_seek_deg) || c->white_seek_deg > 12.0f ||
++         !positive(c->seek_mmps) || c->seek_mmps > 50.0f)) return 0;
++    if (c->vertex_seek_ms != 0U &&
++        (c->vertex_seek_ms > 3000U || !positive(c->vertex_seek_mm) ||
++         c->vertex_seek_mm > 80.0f || c->vertex_seek_mm > c->entry_window_mm ||
++         !positive(c->seek_mmps) || c->seek_mmps > 50.0f)) return 0;
+     if (!positive(c->span_mm) || !positive(c->radius_mm) || !positive(c->arc_mm) ||
+         !positive(c->diagonal_mmps) || !positive(c->arc_mmps) ||
+         !positive(c->start_mmps) || !positive(c->acceleration_mmps2) ||
+@@ -60,6 +69,7 @@
+     r->phase_ms = i->now_ms;
+     r->phase_start_mm = i->distance_mm;
+     r->edge_seen = r->settled_seen = r->lost_seen = r->recovery_seen = 0U;
++    r->arc_valid_seen = r->loss_seek = r->seek_aligned = r->resume_active = 0U;
+     o->control = T3_HALT;
+     o->reset_controllers = 1U;
+ }
+@@ -169,6 +179,11 @@
+                 o->signal_point = r->leg == 0U ? T3_POINT_C : T3_POINT_D;
+                 phase(r, T3_VERTEX_BRAKE, i, o);
+             }
++        } else if (r->config.vertex_seek_ms != 0U && progress >= r->diagonal_mm &&
++                   i->black_count == 0U) {
++            /* 预计已到 C/D 附近但探头仍全白：保留原顶点距离窗，先停再向弧线切线接近。
++               此时不报告经过顶点，也不假定已经在线上。 */
++            phase(r, T3_VERTEX_SEEK, i, o);
+         } else {
+             stable(r, 0, i->now_ms);
+             o->control = T3_HOLD_HEADING;
+@@ -189,31 +204,104 @@
+             }
+         } else {
+             stable(r, 0, i->now_ms);
+-            int follow = i->line_valid;
+-            if (r->lost_seen && r->config.recovery_ms != 0U) {
+-                /* 瞬间有效读数不能续期；先检查从第一次失线起算的总预算。 */
+-                if ((uint32_t)(i->now_ms - r->lost_start_ms) >= r->config.lost_ms) {
+-                    fault(r, T3_LOST);
+-                    follow = 0;
+-                } else if (follow) {
+-                    if (!r->recovery_seen) {
+-                        r->recovery_seen = 1U;
+-                        r->recovery_start_ms = i->now_ms;
++            if (!i->line_valid && !r->lost_seen) {
++                r->lost_seen = 1U; r->lost_start_ms = i->now_ms;
++                r->lost_start_mm = i->distance_mm; r->lost_yaw_deg = i->yaw_deg;
++                r->loss_seek = r->arc_valid_seen && i->black_count == 0U && r->config.white_seek_ms != 0U;
++                o->reset_controllers = 1U;
++            }
++            if (r->lost_seen && !i->line_valid && i->black_count != 0U) r->loss_seek = 0U;
++            uint32_t budget = r->loss_seek ? r->config.white_seek_ms : r->config.lost_ms;
++            float loss_travel = i->distance_mm - r->lost_start_mm;
++            if (r->lost_seen && ((uint32_t)(i->now_ms - r->lost_start_ms) >= budget ||
++                (r->loss_seek && (loss_travel < -5.0f || loss_travel >= r->config.white_seek_mm ||
++                 fabsf(wrap(i->yaw_deg - r->lost_yaw_deg)) > r->config.white_seek_deg)))) {
++                fault(r, T3_LOST);
++            } else if (!i->line_valid) {
++                r->recovery_seen = 0U;
++                if (r->loss_seek) {
++                    /* 全白且本弧段有有效历史才允许低速桥接；不把 1111 伪装成有效线。 */
++                    o->control = T3_SEEK_LINE;
++                    o->base_mmps = r->config.seek_mmps;
++                    o->heading_deg = wrap(r->lost_yaw_deg + (r->leg == 1U ? 1.0f : -1.0f) *
++                        fmaxf(loss_travel, 0.0f) / r->config.radius_mm * 57.2957795131f);
++                } else o->reset_controllers = 1U;
++            } else {
++                int recovered = !r->lost_seen || r->config.recovery_ms == 0U;
++                if (!recovered) {
++                    if (!r->recovery_seen) { r->recovery_seen = 1U; r->recovery_start_ms = i->now_ms; }
++                    recovered = (uint32_t)(i->now_ms - r->recovery_start_ms) >= r->config.recovery_ms;
++                }
++                if (!recovered) o->reset_controllers = 1U;
++                else {
++                    if (r->lost_seen) { r->resume_active = 1U; r->resume_ms = i->now_ms; }
++                    r->lost_seen = r->recovery_seen = r->loss_seek = 0U;
++                    r->arc_valid_seen = 1U;
++                    o->control = T3_FOLLOW_LINE;
++                    o->base_mmps = speed(r, i, r->config.arc_mmps, r->config.arc_mm - progress, r->config.arc_acceleration_mmps2);
++                    if (r->resume_active) {
++                        float ramp = r->config.start_mmps + r->config.arc_acceleration_mmps2 *
++                            (float)(uint32_t)(i->now_ms - r->resume_ms) / 1000.0f;
++                        o->base_mmps = fminf(o->base_mmps, ramp);
++                        if (ramp >= r->config.arc_mmps) r->resume_active = 0U;
+                     }
+-                    follow = (uint32_t)(i->now_ms - r->recovery_start_ms) >= r->config.recovery_ms;
+-                }
+-            }
+-            if (!follow) {
+-                o->reset_controllers = 1U;
+-                if (!i->line_valid) r->recovery_seen = 0U;
+-                if (!r->lost_seen) { r->lost_seen = 1U; r->lost_start_ms = i->now_ms; }
+-                else if ((uint32_t)(i->now_ms - r->lost_start_ms) >= r->config.lost_ms) fault(r, T3_LOST);
++                }
++            }
++        }
++    } else if (r->phase == T3_VERTEX_SEEK) {
++        float tangent = wrap(r->start_heading_deg + r->diagonal_angle_deg + (r->leg == 2U ? 180.0f : 0.0f));
++        float error = wrap(tangent - i->yaw_deg);
++        if (progress > r->diagonal_mm + r->config.entry_window_mm ||
++            phase_travel >= r->config.vertex_seek_mm ||
++            (uint32_t)(i->now_ms - r->phase_ms) >= r->config.vertex_seek_ms) fault(r, T3_EDGE);
++        else if (fabsf(wrap(i->yaw_deg - diagonal_heading(r))) > r->diagonal_angle_deg + 12.0f)
++            fault(r, T3_HEADING);
++        else if (i->line_valid) {
++            o->reset_controllers = 1U;
++            if (stable(r, 1, i->now_ms)) {
++                o->signal_point = r->leg == 0U ? T3_POINT_C : T3_POINT_D;
++                phase(r, T3_VERTEX_BRAKE, i, o);
++            }
++        } else {
++            stable(r, 0, i->now_ms);
++            if (i->black_count != 0U) {
++                /* 全黑/不连续黑线不能作为搜索方向，保持零输出直到原预算到期。 */
++                o->reset_controllers = 1U; r->settled_seen = 0U;
++            } else if (!r->seek_aligned) {
++                if (fabsf(error) <= r->config.align_tolerance_deg) {
++                    o->reset_controllers = 1U;
++                    if (fabsf(i->left_mmps) <= 5.0f && fabsf(i->right_mmps) <= 5.0f) {
++                        if (!r->settled_seen) { r->settled_seen = 1U; r->settled_ms = i->now_ms; }
++                        if ((uint32_t)(i->now_ms - r->settled_ms) >= r->config.settle_ms) {
++                            r->seek_aligned = 1U; r->seek_forward_ms = i->now_ms; r->seek_forward_mm = i->distance_mm;
++                        }
++                    } else r->settled_seen = 0U;
++                } else {
++                    r->settled_seen = 0U; o->control = T3_TURN_FORWARD; o->heading_deg = tangent;
++                    o->left_mmps = error < 0.0f ? r->config.turn_mmps : 0.0f;
++                    o->right_mmps = error > 0.0f ? r->config.turn_mmps : 0.0f;
++                }
+             } else {
+-                r->lost_seen = r->recovery_seen = 0U;
+-                o->control = T3_FOLLOW_LINE;
+-                o->base_mmps = speed(r, i, r->config.arc_mmps, r->config.arc_mm - progress, r->config.arc_acceleration_mmps2);
+-            }
+-        }
++                o->control = T3_HOLD_HEADING; o->base_mmps = r->config.seek_mmps;
++                float advance = fmaxf(i->distance_mm - r->seek_forward_mm, 0.0f);
++                o->heading_deg = wrap(tangent + (r->leg == 0U ? 1.0f : -1.0f) *
++                    advance / r->config.radius_mm * 57.2957795131f);
++            }
++        }
++    } else if (r->phase == T3_ALIGN_SETTLE) {
++        if ((uint32_t)(i->now_ms - r->phase_ms) >= r->config.align_timeout_ms ||
++            phase_travel > r->config.turn_travel_limit_mm) fault(r, T3_TURN);
++        else if ((uint32_t)(i->now_ms - r->start_settle_ms) >= r->config.brake_timeout_ms) fault(r, T3_SETTLE);
++        else if (fabsf(wrap(align_heading(r) - i->yaw_deg)) > r->config.align_tolerance_deg) {
++            r->phase = T3_ALIGN; r->edge_seen = r->settled_seen = 0U;
++            o->reset_controllers = 1U;
++        } else if (fabsf(i->left_mmps) <= 5.0f && fabsf(i->right_mmps) <= 5.0f) {
++            if (!r->settled_seen) { r->settled_seen = 1U; r->settled_ms = i->now_ms; }
++            if ((uint32_t)(i->now_ms - r->settled_ms) >= r->config.settle_ms) {
++                phase(r, r->leg & 1U ? T3_CAPTURE : T3_DIAGONAL, i, o);
++                if (!(r->leg & 1U)) r->leg_start_mm = i->distance_mm;
++            }
++        } else r->settled_seen = 0U;
+     } else if (r->phase == T3_VERTEX_BRAKE || r->phase == T3_FINAL_BRAKE || r->phase == T3_START_SETTLE) {
+         if (r->phase == T3_START_SETTLE &&
+             ((uint32_t)(i->now_ms - r->phase_ms) >= r->config.align_timeout_ms ||
+@@ -260,10 +348,10 @@
+                     r->phase_ms = turn_ms;
+                     r->phase_start_mm = turn_origin;
+                 }
+-                else if (r->leg & 1U) phase(r, T3_CAPTURE, i, o);
+                 else {
+-                    phase(r, T3_DIAGONAL, i, o);
+-                    r->leg_start_mm = i->distance_mm;
++                    uint32_t turn_ms = r->phase_ms; float origin = r->phase_start_mm;
++                    phase(r, T3_ALIGN_SETTLE, i, o);
++                    r->start_settle_ms = i->now_ms; r->phase_ms = turn_ms; r->phase_start_mm = origin;
+                 }
+             }
+         } else {
+--- a/Core/Src/car_task3_port.c
++++ b/Core/Src/car_task3_port.c
+@@ -47,16 +47,32 @@
+         app->heading.error = CarMath_WrapDegrees(o->heading_deg - app->heading.angle);
+         app->route.targets[LEFT] = o->left_mmps;
+         app->route.targets[RIGHT] = o->right_mmps;
+-        /* 任务四接近目标角时降低外轮速度，减少不同车架惯性导致的过冲。
++        /* 任务三、四接近目标角时降低外轮速度，减少不同车架惯性导致的过冲。
+            仍按陀螺仪确认角度，并保留原时间、距离及内轮零目标保护。 */
+-        if (app->route.motion == MOVE_TASK4) {
+-            float scale = fminf(1.0f, fabsf(app->heading.error) / DPT_TASK4_TURN_SLOW_DEG);
++        if (CarMotion_IsFigureEight(app->route.motion)) {
++            float slow = app->route.motion == MOVE_TASK4 ? DPT_TASK4_TURN_SLOW_DEG : DPT_TASK3_TURN_SLOW_DEG;
++            float floor = app->route.motion == MOVE_TASK4 ? DPT_TASK4_TURN_MIN_MMPS : DPT_TASK3_TURN_MIN_MMPS;
++            float scale = fminf(1.0f, fabsf(app->heading.error) / slow);
+             for (unsigned w = 0; w < 2U; ++w)
+                 if (app->route.targets[w] > 0.0f)
+                     app->route.targets[w] = fminf(app->route.targets[w],
+-                        fmaxf(DPT_TASK4_TURN_MIN_MMPS, app->route.targets[w] * scale));
++                        fmaxf(floor, app->route.targets[w] * scale));
+             app->route.base = (app->route.targets[LEFT] + app->route.targets[RIGHT]) * 0.5f;
+         }
++    } else if (o->control == T3_SEEK_LINE) {
++        /* 仅核心已授权的弧段全白桥接；不调用正常巡线接口，也不伪造 valid。 */
++        if (app->route.task3.phase != T3_ARC || !app->route.task3.loss_seek ||
++            !app->route.task3.arc_valid_seen || !app->route.task3_trace.valid_seen ||
++            app->line.valid || app->line.count != 0U) {
++            app->runtime.drive(0, 0); CarWheel_Clear(app); return;
++        }
++        float base = fminf(o->base_mmps, 50.0f), limit = base * 0.4f;
++        float heading = CarMath_WrapDegrees(o->heading_deg - app->heading.angle);
++        float diff = DPT_LINE_GAIN * app->route.task3_trace.valid_error * base / DPT_LINE_CRUISE_MMPS - DPT_HEADING_GAIN * heading;
++        diff = fmaxf(-limit, fminf(limit, diff));
++        app->route.targets[LEFT] = base + diff; app->route.targets[RIGHT] = base - diff;
++        app->route.base = base; app->line.diff = diff;
++        app->heading.reference = o->heading_deg; app->heading.error = heading;
+     } else if (o->control == T3_FOLLOW_LINE) {
+         CarLine_SetTargets(app, now, o->base_mmps);
+     }
+--- a/Core/Src/car_ui.c
++++ b/Core/Src/car_ui.c
+@@ -10,8 +10,8 @@
+         static const char *const states[] = {"IDLE", "RUN", "DONE", "OFF", "LOW",
+             "ADC", "GAP", "REV", "FAST", "STALL", "UART", "STOP", "YAW", "BRAKE", "TIMEOUT", "SETTLE", "LOST", "LINE"};
+         const char *title = "TASK 1 A->B";
+-        if (app->route.motion == MOVE_TASK4 || (app->route.motion == MOVE_NONE && app->button.selected_motion == MOVE_TASK4)) title = "TASK 4 ROBUST V1";
+-        else if (app->route.motion == MOVE_TASK3 || (app->route.motion == MOVE_NONE && app->button.selected_motion == MOVE_TASK3)) title = "TASK 3 CAP V2";
++        if (app->route.motion == MOVE_TASK4 || (app->route.motion == MOVE_NONE && app->button.selected_motion == MOVE_TASK4)) title = "TASK 4 SEEK V1";
++        else if (app->route.motion == MOVE_TASK3 || (app->route.motion == MOVE_NONE && app->button.selected_motion == MOVE_TASK3)) title = "TASK 3 SEEK V1";
+         else if (app->route.motion == MOVE_TASK2 || (app->route.motion == MOVE_NONE && app->button.selected_motion == MOVE_TASK2)) title = "TASK 2 ONE LAP";
+         else if (app->route.motion == MOVE_LINE || (app->route.motion == MOVE_NONE && app->button.selected_motion == MOVE_LINE)) title = "TEST HALF ARC";
+         else if (app->route.motion == MOVE_DISTANCE) title = "TEST GO20";
+@@ -33,7 +33,10 @@
+         if (CarMotion_IsFigureEight(app->route.motion) || (app->route.motion == MOVE_NONE && CarMotion_IsFigureEight(app->button.selected_motion))) {
+             uint32_t elapsed = app->runtime.state == RUNNING ? (uint32_t)(now - app->route.start_ms) : app->route.elapsed_ms;
+             const char *segment = app->route.task3.phase == T3_START_ALIGN ? "TURN A" :
+-                (app->route.task3.phase == T3_START_SETTLE ? "WAIT A" : CarTask3_LegName(&app->route.task3));
++                (app->route.task3.phase == T3_START_SETTLE ? "WAIT A" :
++                 (app->route.task3.phase == T3_ALIGN_SETTLE ? "WAIT" :
++                  (app->route.task3.phase == T3_VERTEX_SEEK ? (app->route.task3.leg == 0U ? "SEEK C" : "SEEK D") :
++                   (app->route.task3.loss_seek ? "SEEK" : CarTask3_LegName(&app->route.task3)))));
+             if (app->route.motion == MOVE_TASK4 || (app->route.motion == MOVE_NONE && app->button.selected_motion == MOVE_TASK4)) {
+                 unsigned lap = app->route.task4.completed_laps + 1U;
+                 if (lap > DPT_TASK4_LAPS) lap = DPT_TASK4_LAPS;
+--- a/tools/tests/run_tests.py
++++ b/tools/tests/run_tests.py
+@@ -21,7 +21,7 @@
+ if args.sanitize:
+     flags += ['-fsanitize=address,undefined', '-fno-omit-frame-pointer']
+ with tempfile.TemporaryDirectory(prefix='sunward-host-tests-') as folder:
+-    for suite in ['motion', 'task2', 'task3', 'task4']:
++    for suite in ['motion', 'task2', 'task3', 'task4', 'seek']:
+         for public in [False, True]:
+             name = suite + ('_car_app' if public else '_legacy_api')
+             binary = str(Path(folder) / name)
+@@ -38,4 +38,4 @@
+                 print(result.stdout + result.stderr, flush=True)
+                 result.check_returncode()
+             print(name + ': ' + result.stdout.strip())
+-print('PASS: motion/task2/task3/task4 regressions; CarApp and compatibility APIs; separate module linkage.')
++print('PASS: motion/task2/task3/task4/seek regressions; CarApp and compatibility APIs; separate module linkage.')
+--- a/tools/tests/test_seek.c
++++ b/tools/tests/test_seek.c
+@@ -0,0 +1,140 @@
++/* Default production search behaviour and actual scheduler integration. No hardware access. */
++#define CAR_TASK3_TEST_MAIN legacy_task3_main
++#include "test_task3.c"
++#undef CAR_TASK3_TEST_MAIN
++
++static void seek_start(unsigned task)
++{
++ if(task==3) {task3_start();app()->route.task3.config=CarRoute_Task3Config();}
++ else {
++  setup();line_inputs=15;hold();hold();hold();hold();calibrate();enable();press_key();
++  assert(app()->route.motion==MOVE_TASK4 && app()->runtime.state==RUNNING);
++  assert(app()->route.task3.config.white_seek_ms==300 && app()->route.task3.config.vertex_seek_ms==3000);
++ }
++}
++static void seek_arc(unsigned task)
++{
++ seek_start(task);reach_phase(T3_ARC);line_inputs=9;step(10,177,176);
++ assert(app()->route.task3.arc_valid_seen);
++}
++static void seek_d(void)
++{
++ seek_start(3);
++ for(unsigned n=0;n<3500 && !(app()->route.task3.leg==2 && app()->route.task3.phase==T3_DIAGONAL);n++) {
++  assert(app()->runtime.state==RUNNING);step_route();
++ }
++ assert(app()->route.task3.phase==T3_DIAGONAL && app()->route.task3.leg==2);
++ app()->route.distance_mm[0]=app()->route.distance_mm[1]=app()->route.task3.leg_start_mm+1281;
++ line_inputs=15;step(10,0,0);
++ assert(app()->runtime.state==RUNNING && app()->route.task3.phase==T3_VERTEX_SEEK && a==0 && b==0);
++}
++int main(void)
++{
++ CarTask3Config c=CarRoute_Task3Config();assert(CarTask3_ConfigValid(&c));
++ c.white_seek_ms=301;assert(!CarTask3_ConfigValid(&c));
++ c=CarRoute_Task3Config();c.white_seek_mm=21;assert(!CarTask3_ConfigValid(&c));
++ c=CarRoute_Task3Config();c.white_seek_deg=13;assert(!CarTask3_ConfigValid(&c));
++ c=CarRoute_Task3Config();c.vertex_seek_ms=3001;assert(!CarTask3_ConfigValid(&c));
++ c=CarRoute_Task3Config();c.vertex_seek_mm=NAN;assert(!CarTask3_ConfigValid(&c));
++ /* Full single/four-lap route under actual default config, without field dynamics claims. */
++ for(unsigned task=3;task<=4;task++) {
++  seek_start(task);
++  for(unsigned n=0;n<12500 && app()->runtime.state==RUNNING;n++)step_route();
++  assert(app()->runtime.state==DONE && a==0 && b==0);
++  assert(signals==(task==3?5:17));
++  if(task==4)assert(app()->route.task4.completed_laps==4);
++ }
++ /* The reported D-side miss now enters bounded search, never fabricates a D signal. */
++ seek_d();int before=signals;
++ step(10,0,0);assert(app()->route.targets[0]>0 && app()->route.targets[1]==0 && signals==before);
++ line_inputs=11;
++ for(unsigned n=0;n<3;n++){step(10,0,0);assert(app()->route.task3.phase==T3_VERTEX_SEEK && a==0 && b==0 && signals==before);}
++ step(10,0,0);assert(app()->route.task3.phase==T3_VERTEX_BRAKE && signals==before+1);
++ for(unsigned n=0;n<500 && app()->route.task3.phase!=T3_ARC;n++)step_route();
++ assert(app()->runtime.state==RUNNING && app()->route.task3.phase==T3_ARC && app()->route.task3.leg==3);
++ /* Search is terminated by original global vertex window, local time/distance and yaw. */
++ for(unsigned limit=0;limit<4;limit++) {
++  seek_d();before=signals;
++  switch(limit) {
++   case 0:app()->route.distance_mm[0]=app()->route.distance_mm[1]=app()->route.task3.leg_start_mm+1401;break;
++   case 1:app()->route.task3.phase_ms=ms-3000;break;
++   case 2:app()->route.task3.phase_start_mm-=80;break;
++   case 3:app()->heading.angle+=60;break;
++  }
++  step(10,0,0);assert(app()->runtime.state!=RUNNING && a==0 && b==0 && signals==before);
++ }
++ /* White vertex search aligns and settles before advancing, never reverses. */
++ seek_d();
++ /* Use production tangent formula directly for D (initial AB reference +180 degrees). */
++ app()->heading.angle=CarMath_WrapDegrees(app()->route.task3.start_heading_deg+app()->route.task3.diagonal_angle_deg+180);
++ for(unsigned n=0;n<21;n++){step(10,0,0);assert(a==0 && b==0);}
++ assert(app()->route.task3.seek_aligned);step(10,0,0);
++ assert(a>0 && b<0 && app()->route.targets[0]>0 && app()->route.targets[1]>0);
++ /* Both turns must remain halted while wheels still move or yaw leaves tolerance. */
++ seek_start(3);reach_phase(T3_ALIGN_SETTLE);uint32_t turn_start=app()->route.task3.phase_ms;
++ for(unsigned n=0;n<10;n++){step(10,177,176);assert(app()->route.task3.phase==T3_ALIGN_SETTLE && a==0 && b==0);}
++ app()->heading.angle+=5;step(10,0,0);
++ assert(app()->route.task3.phase==T3_ALIGN && app()->route.task3.phase_ms==turn_start && a==0 && b==0);
++ /* Transient all-white arc interval bridges slowly while preserving valid=false and fixed budgets. */
++ for(unsigned task=3;task<=4;task++) {
++  seek_arc(task);uint32_t start=app()->route.start_ms;float origin=app()->route.task3.leg_start_mm;
++  line_inputs=15;step(10,0,0);
++  assert(!app()->line.valid && app()->route.task3.loss_seek && a>0 && b<0);
++  assert(app()->route.base==40 && app()->route.targets[0]<=56 && app()->route.targets[1]<=56);
++  uint32_t loss=app()->route.task3_trace.lost_ms;
++  for(unsigned n=0;n<12;n++)step(10,100,100);
++  assert(app()->runtime.state==RUNNING && app()->route.task3_trace.lost_ms==loss);
++  line_inputs=9;
++  for(unsigned n=0;n<3;n++){step(10,0,0);assert(a==0 && b==0 && app()->route.task3_trace.lost_seen);}
++  step(10,0,0);assert(app()->runtime.state==RUNNING && !app()->route.task3.lost_seen && !app()->route.task3_trace.lost_seen);
++  assert(app()->route.base<=50.01f && app()->route.start_ms==start && app()->route.task3.leg_start_mm==origin);
++ }
++ /* An unconfirmed opposite-side glitch cannot replace the last trusted steering direction. */
++ seek_arc(3);line_inputs=14;step(10,177,176);
++ assert(app()->route.task3_trace.valid_error>0);
++ line_inputs=15;step(10,0,0);assert(app()->route.targets[0]>app()->route.targets[1]);
++ line_inputs=7;step(10,0,0);assert(app()->line.error<0 && a==0 && b==0);
++ line_inputs=15;step(10,0,0);
++ assert(app()->route.task3_trace.valid_error>0 && app()->route.targets[0]>app()->route.targets[1]);
++ /* Every bound is enforced, including 300ms even when the late sample is valid. */
++ for(unsigned limit=0;limit<4;limit++) {
++  seek_arc(3);line_inputs=15;step(10,0,0);
++  if(limit==0 || limit==3) {
++   for(unsigned n=0;n<29;n++)step(10,0,0);
++   if(limit==3)line_inputs=9;
++  } else if(limit==1)app()->route.task3.lost_start_mm-=20;
++  else app()->heading.angle+=13;
++  step(10,0,0);assert(app()->runtime.state==LINE_LOST && a==0 && b==0 && app()->route.task3.fault==T3_LOST);
++  line_inputs=9;for(unsigned n=0;n<20;n++)step(10,0,0);
++  assert(app()->runtime.state==LINE_LOST && a==0 && b==0);
++ }
++ /* No valid history, all-black and separated-black patterns never authorize positive search. */
++ for(unsigned pattern=0;pattern<3;pattern++) {
++  seek_start(3);reach_phase(T3_ARC);
++  if(pattern) {line_inputs=9;step(10,0,0);}
++  line_inputs=pattern==0?15:(pattern==1?0:5);step(10,0,0);
++  assert(a==0 && b==0 && !app()->route.task3.loss_seek);
++  for(unsigned n=0;n<10;n++)step(10,0,0);
++  assert(app()->runtime.state==LINE_LOST);
++ }
++ /* Alternating white/valid samples do not renew the search episode. */
++ seek_arc(3);line_inputs=15;step(10,0,0);uint32_t loss=app()->route.task3.lost_start_ms;
++ for(unsigned n=0;n<29;n++) {line_inputs=n%2?15:9;step(10,0,0);assert(app()->route.task3.lost_start_ms==loss);}
++ step(10,0,0);assert(app()->runtime.state==LINE_LOST && a==0 && b==0);
++ /* STOP, enable, sensor, scheduler and total watchdog override either search phase. */
++ for(unsigned phase=0;phase<2;phase++)for(unsigned f=0;f<7;f++) {
++  if(phase)seek_d();else {seek_arc(3);line_inputs=15;step(10,0,0);}
++  switch(f) {
++   case 0:off=1;break;
++   case 1:queue(0,"STOP!");break;
++   case 2:imu_fail=1;break;
++   case 3:adc_fail=1;app()->power.sample_ms=ms-100;break;
++   case 4:faults[0]=1;break;
++   case 5:app()->route.start_ms=ms-40000;break;
++   case 6:step(30,0,0);break;
++  }
++  step(10,0,0);assert(app()->runtime.state!=RUNNING && a==0 && b==0);
++ }
++ puts("PASS: default Task3/4 completion, D miss bounded acquisition without false point signals, settled turn/yaw recheck, all-white bridge/reacquisition, all bounds, invalid/no-history rejection, chatter deadline and fault priority. Software only.");
++ return 0;
++}
+--- a/tools/tests/test_task3.c
++++ b/tools/tests/test_task3.c
+@@ -14,6 +14,9 @@
+  assert(app()->runtime.state==RUNNING&&app()->route.motion==MOVE_TASK3);
+  assert(!app()->runtime.bluetooth_on && wp[0]==0 && wp[1]==0);
+  assert(app()->route.run_duration==40000U && signals==1);
++ /* Retain pre-seek profile for legacy protection regressions; test_seek runs defaults. */
++ app()->route.task3.config.white_seek_ms=app()->route.task3.config.vertex_seek_ms=0;
++ app()->route.task3.config.recovery_ms=0;
+ }
+ static float join_target(void)
+ {
+@@ -46,6 +49,7 @@
+   break;
+  }
+  case T3_CAPTURE: line_inputs=9;break;
++ case T3_VERTEX_SEEK: line_inputs=p>=t->diagonal_mm?9:15;break;
+  default: break;
+  }
+  step(10,dl,dr);
+@@ -79,6 +83,7 @@
+    app()->heading.angle=CarMath_WrapDegrees(t->start_heading_deg+t->diagonal_angle_deg+
+      (t->leg==1U?fminf(p/t->config.arc_mm,1)*180:180-fminf(p/t->config.arc_mm,1)*180));
+   } else if(t->phase==T3_CAPTURE) line_inputs=9;
++  else if(t->phase==T3_VERTEX_SEEK) line_inputs=p>=t->diagonal_mm?9:15;
+   else if(t->phase==T3_ALIGN || t->phase==T3_START_ALIGN)
+    app()->heading.angle=CarMath_WrapDegrees(app()->heading.angle+(app()->route.targets[1]-app()->route.targets[0])*.01f/140*57.2957795131f);
+   int counts[2];
+@@ -114,7 +119,7 @@
+  assert(app()->runtime.state==DONE && app()->route.task3.phase==T3_DONE && signals==5 && a==0 && b==0);
+  assert(app()->route.elapsed_ms<40000 && app()->route.leg==3U && rp[0]==wp[0] && wp[1]==0);
+  for(unsigned i=0;i<50;i++)step(10,0,0);
+- assert(signals==5 && !app()->signal.active && strcmp(oled_lines[0],"TASK 3 CAP V2")==0);
++ assert(signals==5 && !app()->signal.active && strcmp(oled_lines[0],"TASK 3 SEEK V1")==0);
+  assert(strstr(oled_lines[2],"DONE DA T"));for(unsigned i=0;i<4;i++)assert(strlen(oled_lines[i])<=21);
+  /* Task-specific faster schedule, with unchanged half-circle speed/deadline. */
+  assert(CarRoute_Task3Config().diagonal_mmps==240 && CarRoute_Task3Config().arc_mmps==200);
+--- a/tools/tests/test_task4.c
++++ b/tools/tests/test_task4.c
+@@ -8,7 +8,7 @@
+  setup();line_inputs=15;hold();hold();hold();hold();
+  assert(app()->button.selected_motion==MOVE_TASK4 && app()->runtime.state!=RUNNING);
+  assert(app()->route.goal>20280 && app()->route.goal<20300);
+- assert(strcmp(oled_lines[0],"TASK 4 ROBUST V1")==0);
++ assert(strcmp(oled_lines[0],"TASK 4 SEEK V1")==0);
+ }
+ static void task4_start(void)
+ {
+@@ -19,6 +19,8 @@
+  assert(app()->route.task3.config.deadline_ms==80000U && app()->route.run_duration==160000U);
+  assert(app()->route.task4.completed_laps==0 && app()->route.task3.phase==T3_START_ALIGN && signals==1);
+  assert(!app()->runtime.bluetooth_on && wp[0]==0 && wp[1]==0);
++ /* Retain T27 profile here; default moving recovery is covered by test_seek. */
++ app()->route.task3.config.white_seek_ms=app()->route.task3.config.vertex_seek_ms=0;
+ }
+ static uint32_t target_follow_four(int prior_profile)
+ {
+@@ -42,6 +44,7 @@
+    app()->heading.angle=CarMath_WrapDegrees(t->start_heading_deg+t->diagonal_angle_deg+
+      (t->leg==1U?fminf(p/t->config.arc_mm,1)*180:180-fminf(p/t->config.arc_mm,1)*180));
+   } else if(t->phase==T3_CAPTURE) line_inputs=9;
++  else if(t->phase==T3_VERTEX_SEEK) line_inputs=p>=t->diagonal_mm?9:15;
+   else if(t->phase==T3_ALIGN || t->phase==T3_START_ALIGN)
+    app()->heading.angle=CarMath_WrapDegrees(app()->heading.angle+(app()->route.targets[1]-app()->route.targets[0])*.01f/140*57.2957795131f);
+   int counts[2];
+@@ -74,11 +77,11 @@
+ {
+  CarTask3Config c=CarTask4_Config();
+  assert(c.lost_ms==200U && c.recovery_ms==30U);
+- assert(CarRoute_Task3Config().lost_ms==100U && CarRoute_Task3Config().recovery_ms==0U);
++ assert(CarRoute_Task3Config().lost_ms==100U && CarRoute_Task3Config().recovery_ms==30U);
+  c.recovery_ms=29;assert(!CarTask3_ConfigValid(&c));
+  c=CarTask4_Config();c.recovery_ms=c.lost_ms;assert(!CarTask3_ConfigValid(&c));
+  c=CarTask4_Config();c.lost_ms=251;assert(!CarTask3_ConfigValid(&c));
+- c=CarRoute_Task3Config();c.lost_ms=101;assert(!CarTask3_ConfigValid(&c));
++ c=CarRoute_Task3Config();c.recovery_ms=0;c.lost_ms=101;assert(!CarTask3_ConfigValid(&c));
+  /* A dropout longer than the old 100ms gate can recover, always stopped until confirmed. */
+  robust_arc();line_inputs=15;
+  for(unsigned n=0;n<12;n++) {step(10,0,0);assert(app()->runtime.state==RUNNING && a==0 && b==0);}

@@ -1,0 +1,39 @@
+日期：2026-10-08
+范围：独立电脑端 BLE 键盘控制工具。未修改 Sunward 工程，未烧录，未连接蓝牙设备。
+
+编译：PASS
+xcrun swiftc -swift-version 5 -target arm64-apple-macosx13.0 -module-cache-path /private/tmp/c10b-wasd-module-cache -framework CoreBluetooth -framework Foundation WASD.swift -Xlinker -sectcreate -Xlinker __TEXT -Xlinker __info_plist -Xlinker Info.plist -o c10b-wasd
+
+自检：PASS
+c10b-wasd --self-test
+键位：W→F!，S→B!，A→L!，D→R!，空格/X→STOP!
+同方向重复过滤：PASS
+STOP清除排队移动命令：PASS
+自检不创建蓝牙管理器：PASS
+
+启动脚本 zsh -n：PASS
+Info.plist plutil -lint：PASS
+实物蓝牙连接、通知通道与轮子动作：尚未测试。
+
+2026-10-08 CRLF拆行修复：
+用户已经连接BT24，选择FFE0服务下的FFE1（列表编号1）。
+用户日志 records-wasd-2026-10-08-20-04-23.json 内实际收到70条完整DPI。
+旧代码String.firstIndex(of: "\n")无法匹配Swift合并为单个Character的CRLF，导致误报无DPI。
+修复：按字节0x0A拆行，再解码文字；每个通知特征独立缓存。
+重新编译：PASS
+CRLF/LF、多行、任意分包大小、超长行后恢复自检：PASS
+用户真实日志 --replay-log 回放：PASS，识别70条DPI，满足键盘就绪条件。
+上述验证没有创建蓝牙管理器、没有发送实际命令。
+修复后实物驾驶：仍待用户验证。没有修改Sunward工程。
+
+20:08记录后追加修复：
+records-wasd-2026-10-08-20-08-08.json：178条DPI，全部ST=IDLE；电脑有F/B/L/R/STOP写入记录，主板未报告命令响应。
+BT24改为自动选择FFE0/FFE2写入、FFE0/FFE1接收。
+移动键新增门槛：必须收到主板ST=STOP，单有DPI不再视为双向就绪。
+新增测试：FFE2候选顺序变化、其他服务不误选，STOP完整字段辨认，IDLE和STOPPED不误判。
+
+Shift加速：普通小写120mm/s，大写300mm/s；核对Sunward源码DPT_MANUAL_MAX_MMPS=300。
+只修改独立电脑端工具，没有修改、编译或烧录Sunward。
+变速按主板状态确认：STOP→ST=STOP→V设定→ST=STOP且V匹配→方向命令。
+重复键不延时；空格/Q取消待启动动作；3秒未确认速度则STOP并取消；排队速度配置不被方向键删除。
+源码与可执行文件备份：修复前备份/加速前。

@@ -1,0 +1,36 @@
+{
+  "backup": "/Users/mzh/Desktop/车车/output/固件备份/Sunward_纯按键选模式前备份_2026-10-11_1x5nd5_w",
+  "source_files_changed": [
+    "Core/Src/dual_pi_test.c",
+    "Core/Inc/dual_pi_test.h"
+  ],
+  "hardware_downloaded": false,
+  "physical_line_test_done": false,
+  "polarity": "black=0 / white=1; user rechecked white1111 centre1001",
+  "physical_left_to_right": [
+    "O4",
+    "O3",
+    "O2",
+    "O1"
+  ],
+  "motion": "LF20: 200mm / cruise60mmps / start40mmps / max10s",
+  "selection": "OFF idle hold1500ms toggles GO100/LF20 once; OFF short release=CAL; READY+ON new press=start; busy press=STOP; reboot defaults GO100",
+  "bluetooth_required_for_operation": false,
+  "off_short_action": "stable release distinguishes tap from hold; hold release never CAL",
+  "line_heading": "MPU health monitored; straight heading hold/20deg guard not applied to line turning",
+  "invalid_line": "zero motor command immediately on sample; continuous100ms becomes LOST/LINE fault",
+  "unchanged_files_checked": [
+    "Core/Src/task_oled.c",
+    "Core/Inc/task_oled.h",
+    "Core/Src/main.c",
+    "Core/Src/gpio.c",
+    "Core/Src/mpu6050.c",
+    "Core/Src/soft_i2c.c",
+    "Core/Src/lab_uart_async.c",
+    "Sunward.ioc",
+    ".eide/eide.yml",
+    "build/Debug/builder.params"
+  ],
+  "build_returncode": 0,
+  "hex_sha256": "551f53fb1cf72bced21f6cd86af926ca612e7f8abf30721e5ad7305df7b41b72"
+}

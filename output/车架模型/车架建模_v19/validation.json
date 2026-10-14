@@ -1,0 +1,292 @@
+{
+  "version": "v19",
+  "source": "/Users/mzh/Desktop/车车/output/车架模型/历史版本/车架建模_v18/car_assembly_v18.FCStd",
+  "base_size_mm": [
+    110,
+    130,
+    4
+  ],
+  "deck_reused_without_geometry_change": false,
+  "deck_bottom_z": 84,
+  "battery_bottom_z": 22,
+  "battery_top_z": 83.6,
+  "battery_deck_gap_mm": 0.4,
+  "axle_x": 22.5,
+  "caster_x": -39,
+  "ground_clearance_mm": 8,
+  "caster_hole_pitch_mm": 39.0,
+  "front_rear_ground_difference_mm": 0.0,
+  "body_front_back_mm": 110.0,
+  "user_extension_protrusion_mm": 35,
+  "module_front_x": 90.0,
+  "rear_extreme_x": -55.0,
+  "outline_long_short_height_mm": [
+    200.0,
+    145.0,
+    130.4
+  ],
+  "front_back_margin_mm": 5.0,
+  "envelope_pass": true,
+  "all_shapes_valid": true,
+  "overlaps": [],
+  "base_single_solid": true,
+  "new_printed_parts_count": 2,
+  "front_slots": {
+    "length_mm": 12,
+    "width_mm": 3.4,
+    "columns_x": [
+      30,
+      42
+    ],
+    "rows_y": [
+      -35,
+      0,
+      35
+    ]
+  },
+  "module_is_position_reference": true,
+  "extension_plate_modeled": false,
+  "uncertainties": [
+    "插孔中心暂取距长边端8mm，需按实物核对。",
+    "插头高12mm来自用户，直径暂取14mm；参考电线径2.4mm和弯曲半径6mm未实测。",
+    "PCB柱身20mm可10+10叠接，螺纹与托板刚度需实物试装。",
+    "轮毂、编码器局部和35mm延长板仍包含占位。"
+  ],
+  "print_mesh_closed": true,
+  "side_slots": {
+    "count": 2,
+    "length_mm": 40,
+    "width_mm": 3.4,
+    "centers_xy_mm": [
+      [
+        -20,
+        -51
+      ],
+      [
+        -20,
+        51
+      ]
+    ],
+    "axis": "X前后方向",
+    "shift_inward_mm": 4
+  },
+  "exported_step_single_solid": true,
+  "change_scope": "电池改24x88.6x61.6；上托板加18x26mm插头端部缺口并加厚到6mm；PCB铜柱20mm，主铜柱80mm不变。",
+  "measured_hardware": [
+    {
+      "side": "left",
+      "axial_motor_to_wheel_outer_mm": 97.1,
+      "user_approx_axial_mm": 90,
+      "wheel_to_bracket_gap_mm": 10,
+      "bracket_foot_mm": [
+        40,
+        41
+      ],
+      "foot_hole_count": 4
+    },
+    {
+      "side": "right",
+      "axial_motor_to_wheel_outer_mm": 97.1,
+      "user_approx_axial_mm": 90,
+      "wheel_to_bracket_gap_mm": 10,
+      "bracket_foot_mm": [
+        40,
+        41
+      ],
+      "foot_hole_count": 4
+    }
+  ],
+  "wheel_outer_span_mm": 200.0,
+  "motor_inner_gap_mm": 5.8,
+  "bracket_height_mm": 47.5,
+  "bracket_thickness_mm": 2,
+  "bracket_foot_hole_count": 4,
+  "bracket_foot_hole_centers_known": true,
+  "bracket_base_mounting_finalized": true,
+  "bracket_foot_hole_pitch_mm": [
+    30,
+    24
+  ],
+  "bracket_foot_hole_free_edge_offset_mm": 8,
+  "bracket_mounting": "底脚在底板下方",
+  "minimum_new_hole_to_front_slot_ligament_mm": 2.4265,
+  "measured_bracket_hole_centers_xy_mm": [
+    [
+      7.5,
+      -27
+    ],
+    [
+      7.5,
+      -51
+    ],
+    [
+      37.5,
+      -27
+    ],
+    [
+      37.5,
+      -51
+    ],
+    [
+      7.5,
+      27
+    ],
+    [
+      7.5,
+      51
+    ],
+    [
+      37.5,
+      27
+    ],
+    [
+      37.5,
+      51
+    ]
+  ],
+  "bracket_axis_height_from_sole_mm": 26.5,
+  "all_eight_m3_shaft_paths_clear": true,
+  "rotating_clearances": [
+    {
+      "side": "left",
+      "column_to_tire_rotation_gap_mm": 8.8246,
+      "column_to_shaft_rotation_gap_mm": 24.1564,
+      "column_to_motor_gap_mm": 8.45,
+      "base_to_tire_rotation_gap_mm": 5.0
+    },
+    {
+      "side": "right",
+      "column_to_tire_rotation_gap_mm": 8.8246,
+      "column_to_shaft_rotation_gap_mm": 24.1564,
+      "column_to_motor_gap_mm": 8.45,
+      "base_to_tire_rotation_gap_mm": 5.0
+    }
+  ],
+  "motor_total_length_from_drawing_mm": 75.1,
+  "motor_body_to_encoder_length_mm": 55.1,
+  "motor_gearbox_mm": {
+    "length": 21.5,
+    "diameter": 36.6
+  },
+  "motor_can_mm": {
+    "length": 23,
+    "diameter": 32.8
+  },
+  "rear_encoder_axial_remainder_mm": 10.6,
+  "output_projection_mm": 20,
+  "d_steel_length_mm": 14,
+  "output_shaft_diameter_mm": 6,
+  "d_shaft_flat_to_opposite_mm": 5.5,
+  "single_motor_wheel_axial_total_mm": 97.1,
+  "user_approx_single_motor_wheel_mm": 90,
+  "architecture": "V18结构，实际电池尺寸+顶部插头缺口+抬高C10B",
+  "base_printed_height_mm": 42.0,
+  "controller_deck_mm": [
+    82,
+    128,
+    22.4
+  ],
+  "controller_deck_reused": false,
+  "main_column_count": 4,
+  "main_column_height_mm": 80,
+  "main_column_roots_z": 4,
+  "main_column_centres_xy_mm": [
+    [
+      -7,
+      -58
+    ],
+    [
+      -46,
+      -58
+    ],
+    [
+      -7,
+      58
+    ],
+    [
+      -46,
+      58
+    ]
+  ],
+  "deck_top_z": 90.0,
+  "pcb_hole_centres_xy_mm": [
+    [
+      17.99999999999999,
+      -19.000038000000014
+    ],
+    [
+      -31.00000000000001,
+      -19.000038
+    ],
+    [
+      18.000000000000004,
+      39.000215999999995
+    ],
+    [
+      -30.999999999999996,
+      39.00021600000001
+    ]
+  ],
+  "main_deck_hole_top_counterbore_mm": [
+    7,
+    1.2
+  ],
+  "printed_parts": [
+    {
+      "file": "01_lower_base",
+      "closed": true,
+      "step_solid_count": 1,
+      "printing_orientation": "base flat bottom down"
+    },
+    {
+      "file": "02_upper_controller_deck",
+      "closed": true,
+      "step_solid_count": 1,
+      "printing_orientation": "flat deck down, socket opening up"
+    }
+  ],
+  "controller_deck_flat_thickness_mm": 6,
+  "upper_socket_bottom_z": 67.6,
+  "battery_socket_roof_gap_mm": 0.6,
+  "battery_retention": "opposed_sockets_without_straps",
+  "lower_socket_depth_mm": 20,
+  "upper_socket_engagement_mm": 16,
+  "battery_socket_inner_xy_mm": [
+    25.2,
+    89.8
+  ],
+  "battery_socket_side_clearance_mm": 0.6,
+  "pcb_bolt_head_recess_mm": [
+    6.6,
+    3.2
+  ],
+  "battery_capture_checks": {
+    "lower_insertion_path_clear": true,
+    "upper_release_lift_mm": 17,
+    "battery_top_vertical_free_play_mm": 0.6,
+    "straps_removed": true
+  },
+  "power_connector": {
+    "exposed_height_mm": 12,
+    "reference_diameter_mm": 14,
+    "centre_xy_mm": [
+      -20,
+      -36.3
+    ],
+    "centre_position_confirmed": false,
+    "end_offset_assumed_mm": 8,
+    "upper_notch_xy_mm": [
+      18,
+      26
+    ],
+    "upper_notch_centre_xy_mm": [
+      -20,
+      -38
+    ],
+    "plug_to_c10b_gap_mm": 8.3441,
+    "cable_to_c10b_gap_mm": 2.069,
+    "route_segment_length_mm": 56.1159,
+    "available_cable_length_mm": 250,
+    "pcb_post_height_mm": 20
+  }
+}

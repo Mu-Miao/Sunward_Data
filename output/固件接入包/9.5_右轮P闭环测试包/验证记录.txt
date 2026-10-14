@@ -1,0 +1,35 @@
+全工程ARM编译和链接通过。
+/private/tmp/sunward-rightp-check-me0ariq0/Sunward_rightp_check.elf
+仅临时main按指南修改；未修改Sunward，未下载。新模块无警告。
+原诊断代码未使用警告：
+/private/tmp/sunward-rightp-check-me0ariq0/main_rightp_check.c:331:12: warning: 'Lab_PIForward' defined but not used [-Wunused-function]
+  331 | static int Lab_PIForward(LabPI *pi, float target_mps, float measured_mps,
+      |            ^~~~~~~~~~~~~
+/private/tmp/sunward-rightp-check-me0ariq0/main_rightp_check.c:318:14: warning: 'Lab_WheelSpeed' defined but not used [-Wunused-function]
+  318 | static float Lab_WheelSpeed(int32_t delta, int forward_sign,
+      |              ^~~~~~~~~~~~~~
+/private/tmp/sunward-rightp-check-me0ariq0/main_rightp_check.c:295:13: warning: 'Lab_PrintMPURaw' defined but not used [-Wunused-function]
+  295 | static void Lab_PrintMPURaw(void)
+      |             ^~~~~~~~~~~~~~~
+/private/tmp/sunward-rightp-check-me0ariq0/main_rightp_check.c:278:13: warning: 'Lab_PrintBatteryRaw' defined but not used [-Wunused-function]
+  278 | static void Lab_PrintBatteryRaw(void)
+      |             ^~~~~~~~~~~~~~~~~~~
+/private/tmp/sunward-rightp-check-me0ariq0/main_rightp_check.c:257:13: warning: 'Lab_PrintTickRate' defined but not used [-Wunused-function]
+  257 | static void Lab_PrintTickRate(void)
+      |             ^~~~~~~~~~~~~~~~~
+/private/tmp/sunward-rightp-check-me0ariq0/main_rightp_check.c:236:13: warning: 'Lab_PrintEncoders' defined but not used [-Wunused-function]
+  236 | static void Lab_PrintEncoders(void)
+      |             ^~~~~~~~~~~~~~~~~
+/private/tmp/sunward-rightp-check-me0ariq0/main_rightp_check.c:205:13: warning: 'Lab_MotorTestOnce' defined but not used [-Wunused-function]
+  205 | static void Lab_MotorTestOnce(void)
+      |             ^~~~~~~~~~~~~~~~~
+/private/tmp/sunward-rightp-check-me0ariq0/main_rightp_check.c:149:13: warning: 'Lab_PrintLine' defined but not used [-Wunused-function]
+  149 | static void Lab_PrintLine(void)
+      |             ^~~~~~~~~~~~~
+/private/tmp/sunward-rightp-check-me0ariq0/main_rightp_check.c:61:17: warning: 'line_log_ms' defined but not used [-Wunused-variable]
+   61 | static uint32_t line_log_ms = 0U;
+      |                 ^~~~~~~~~~~
+
+主机模拟检查通过：Reset不自动启动、只接受完整RUN/STOP、右轮单独输出、1800限幅、STOP/OFF/低电压门槛/ADC失败/漏拍与长间隔/反向/超速/堵转/3秒超时/UART失败停车，以及计数器/节拍/DWT回绕。
+主机测试证据：/private/tmp/rightp-host-check-xqtp7p94/测试结果.txt
+实物运动、制动与真实速度表现仍待台架日志。

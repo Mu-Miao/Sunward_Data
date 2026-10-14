@@ -1,0 +1,5 @@
+PASS: prior serial GO100/GO20/heading/manual motion regression, timing/MPU/ADC/encoder/UART protections, braking/coast/settle/completion and unchanged ON key start/busy STOP.
+
+PASS: calibrated1256mm BC endpoint regression; Task2 GPIO-only AB->BC->CD->DA->A four-point signals and final settled stop; white straight/black arc switching gated by distance, debounce and end heading; preserved half-circle settings and task1 regressions; three-mode keys, no BLE required, no premature entry/false arc loss endpoint; bounded missing edges, STOP/OFF/RX/IMU/FAST/GAP/LOW/ADC/STALL/REV/timeout protections, restart/held-key suppression, OLED limits and time wrap. Simulation is not field acceptance.
+
+REPRODUCED: baseline1885mm gate rejects full-white BC exit at S1256 even with correct180deg heading, then LOST after100ms.

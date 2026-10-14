@@ -1,0 +1,20 @@
+--- a/Core/Inc/dual_pi_test.h
++++ b/Core/Inc/dual_pi_test.h
+@@ -49,7 +49,7 @@
+ /* LF04 field correction: raw black=0, white=1; physical L->R O4/O3/O2/O1.
+    Short direction trial only; these gains are not field-accepted arc tuning. */
+ #define DPT_LINE_BLACK_LEVEL 0U
+-#define DPT_LINE_MM (600.0f * 3.1415926f)
++#define DPT_LINE_MM (400.0f * 3.1415926f)
+ #define DPT_LINE_CRUISE_MMPS 200.0f
+ #define DPT_LINE_START_MMPS 50.0f
+ #define DPT_LINE_GAIN 64.0f
+@@ -59,7 +59,7 @@
+ #define DPT_LINE_INVALID_MS 100U
+ /* Task 2: AB straight, BC arc, CD straight, DA arc. No remote operation. */
+ #define DPT_TASK2_STRAIGHT_MM 1000.0f
+-#define DPT_TASK2_ARC_MM DPT_LINE_MM /* User confirmed field radius600mm: keep the tuned half-circle length. */
++#define DPT_TASK2_ARC_MM 1256.0f /* Field: BC full-white exit at encoder mean1256mm; independent half test unchanged. */
+ #define DPT_TASK2_STRAIGHT_MMPS 200.0f
+ #define DPT_TASK2_TIMEOUT_MS 45000U /* Development guard; acceptance requires <=30s. */
+ #define DPT_TASK2_ENTRY_WINDOW_MM 200.0f

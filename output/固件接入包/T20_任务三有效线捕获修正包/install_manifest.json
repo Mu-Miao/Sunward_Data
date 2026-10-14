@@ -1,0 +1,5 @@
+{
+  "Core/Src/car_task3.c": "a7662bdcbb800bd467a71430bf834c4c56d830a12fcfcd9ac49c8cda60d0a1c4",
+  "Core/Src/car_ui.c": "78dfa5c608fd81195f8d017f2e81763c15e79303481005d2e7687473e84afb26",
+  "tools/tests/test_task3.c": "ef15ec633d0c0f2fe43a52ae1ff72b951fbb6fbe0198caa1ebb2b53d8d71b550"
+}

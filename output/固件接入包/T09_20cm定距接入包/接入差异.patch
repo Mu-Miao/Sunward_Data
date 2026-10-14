@@ -1,0 +1,285 @@
+--- a/Core/Inc/dual_pi_test.h
++++ b/Core/Inc/dual_pi_test.h
+@@ -28,6 +28,13 @@
+ #define DPT_HEADING_GAIN 1.0f
+ #define DPT_HEADING_MAX_DIFF 15.0f
+ #define DPT_HEADING_MAX_ERROR 20.0f
++/* First distance task: encoder estimate in mm; effective circumference still needs ruler check. */
++#define DPT_DISTANCE_MM 200.0f
++#define DPT_DISTANCE_TIMEOUT_MS 10000U
++#define DPT_DISTANCE_SLOW_MM 40.0f
++#define DPT_DISTANCE_MIN_MMPS 40.0f
++#define DPT_DISTANCE_SETTLE_MS 200U
++#define DPT_DISTANCE_BRAKE_TIMEOUT_MS 1500U
+ void DualPITest_EnableHeading(int mpu_initialized);
+ void DualPITest_Poll(uint32_t tick10_count);
+ #endif
+--- a/Core/Src/dual_pi_test.c
++++ b/Core/Src/dual_pi_test.c
+@@ -5,9 +5,9 @@
+ #include <string.h>
+ 
+ typedef enum { IDLE, RUNNING, DONE, OFF, LOW, ADC_BAD, GAP,
+-               REVERSE, FAST, STALL, UART_BAD, STOPPED, YAW_BAD } TestState;
++               REVERSE, FAST, STALL, UART_BAD, STOPPED, YAW_BAD, BRAKING, TIMEOUT, SETTLE_BAD } TestState;
+ enum { LEFT = 0, RIGHT = 1 };
+-typedef enum { MOVE_NONE, MOVE_TEST, MOVE_FORWARD, MOVE_BACK, MOVE_LEFT, MOVE_RIGHT, MOVE_HEADING } Motion;
++typedef enum { MOVE_NONE, MOVE_TEST, MOVE_FORWARD, MOVE_BACK, MOVE_LEFT, MOVE_RIGHT, MOVE_HEADING, MOVE_DISTANCE } Motion;
+ typedef enum { Y_NONE, Y_WARM, Y_CAL, Y_READY, Y_FAIL } YawPhase;
+ static YawPhase yaw_phase;
+ static uint8_t yaw_available, cal_requested;
+@@ -16,6 +16,10 @@
+ static int16_t yaw_min[3], yaw_max[3];
+ static float yaw_bias, yaw_angle, yaw_previous_rate, yaw_reference, yaw_error, yaw_diff;
+ static Motion motion;
++static float distance_mm[2], distance_base;
++static uint16_t distance_count[2];
++static uint8_t distance_tracking, settle_seen;
++static uint32_t brake_ms, settle_ms;
+ static float targets[2];
+ static unsigned manual_speed;
+ static uint32_t manual_duration, run_duration, switch_ms;
+@@ -48,7 +52,7 @@
+ static uint32_t adc_ms, log_ms, on_ms, bat_raw, dt_us;
+ static char fault_wheel;
+ static const char banner[] =
+-    "DPI: RUN!=60/3s; F!/B!/L!/R!=120/10s; STOP!; V40..300! TIME1..30!; USB/BT IRQ; CAL!=OFF/still; GO!=heading60/3s\r\n";
++    "DPI: RUN!=60/3s; F!/B!/L!/R!=120/10s; STOP!; V40..300! TIME1..30!; USB/BT IRQ; CAL!=OFF/still; GO!=heading60/3s; GO20!=heading200mm\r\n";
+ 
+ static void clear_controllers(void)
+ {
+@@ -65,6 +69,11 @@
+     clear_controllers();
+     switching = 0;
+     if (yaw_phase == Y_WARM || yaw_phase == Y_CAL) yaw_phase = Y_NONE;
++    if (why != BRAKING) distance_tracking = 0;
++    else {
++        brake_ms = HAL_GetTick();
++        settle_seen = 0;
++    }
+     state = why;
+     fault_wheel = faulty;
+ }
+@@ -99,7 +108,7 @@
+ 
+ static void begin_yaw_calibration(uint32_t now, int enabled)
+ {
+-    if (state == RUNNING || enabled || !yaw_available) return;
++    if (state == RUNNING || state == BRAKING || enabled || !yaw_available) return;
+     drive(0, 0);
+     clear_controllers();
+     yaw_phase = Y_WARM;
+@@ -162,8 +171,8 @@
+ 
+ static void request_motion(Motion requested, uint32_t now)
+ {
+-    if (yaw_phase == Y_WARM || yaw_phase == Y_CAL) return;
+-    if (requested == MOVE_HEADING && (state == RUNNING || yaw_phase != Y_READY)) return;
++    if (state == BRAKING || yaw_phase == Y_WARM || yaw_phase == Y_CAL) return;
++    if ((requested == MOVE_HEADING || requested == MOVE_DISTANCE) && (state == RUNNING || yaw_phase != Y_READY)) return;
+     if (state == RUNNING && (requested == MOVE_TEST || requested == motion)) return;
+     if (!on_seen || (uint32_t)(now - on_ms) < 100U) stop(OFF, '-');
+     else if (!adc_ok || (uint32_t)(now - adc_ms) > 150U) stop(ADC_BAD, '-');
+@@ -173,16 +182,27 @@
+         drive(0, 0);
+         clear_controllers();
+         motion = requested;
+-        float speed = (requested == MOVE_TEST || requested == MOVE_HEADING) ? DPT_TARGET_MMPS : (float)manual_speed;
++        float speed = (requested == MOVE_TEST || requested == MOVE_HEADING || requested == MOVE_DISTANCE) ? DPT_TARGET_MMPS : (float)manual_speed;
+         targets[LEFT] = targets[RIGHT] = speed;
+         if (requested == MOVE_BACK) targets[LEFT] = targets[RIGHT] = -speed;
+         if (requested == MOVE_LEFT) targets[LEFT] = speed * 0.5f;
+         if (requested == MOVE_RIGHT) targets[RIGHT] = speed * 0.5f;
+-        if (requested == MOVE_HEADING) {
++        if (requested == MOVE_HEADING || requested == MOVE_DISTANCE) {
+             yaw_reference = yaw_angle;
+             yaw_error = yaw_diff = 0.0f;
+         }
+-        run_duration = (requested == MOVE_TEST || requested == MOVE_HEADING) ? DPT_DURATION_MS : manual_duration;
++        run_duration = (requested == MOVE_TEST || requested == MOVE_HEADING || requested == MOVE_DISTANCE) ? DPT_DURATION_MS : manual_duration;
++        distance_tracking = 0;
++        if (requested == MOVE_DISTANCE) {
++            for (unsigned i = 0; i < 2U; ++i) {
++                distance_count[i] = (uint16_t)__HAL_TIM_GET_COUNTER(wheels[i].encoder);
++                distance_mm[i] = 0.0f;
++            }
++            distance_base = DPT_TARGET_MMPS;
++            distance_tracking = 1;
++            settle_seen = 0;
++            run_duration = DPT_DISTANCE_TIMEOUT_MS;
++        }
+         start_ms = switch_ms = now;
+         switching = was_running;
+         fault_wheel = '-';
+@@ -211,6 +231,7 @@
+             *stop_requested = 1;
+         }
+         if (strcmp(in->text, "CAL") == 0 && state != RUNNING) cal_requested = 1;
++        if (strcmp(in->text, "GO20") == 0) *requested = MOVE_DISTANCE;
+         if (strcmp(in->text, "GO") == 0) *requested = MOVE_HEADING;
+         if (strcmp(in->text, "RUN") == 0) *requested = MOVE_TEST;
+         if (strcmp(in->text, "F") == 0) *requested = MOVE_FORWARD;
+@@ -238,13 +259,21 @@
+     active = 0;
+     yaw_available = cal_requested = 0;
+     yaw_phase = Y_NONE;
++    distance_tracking = settle_seen = 0;
++    distance_mm[LEFT] = distance_mm[RIGHT] = 0.0f;
++    distance_base = DPT_TARGET_MMPS;
+     if (motor_ab == NULL) return HAL_ERROR;
+     motor_ab(0, 0);
+     if (u == NULL || left_encoder == NULL || right_encoder == NULL ||
+         left_encoder == right_encoder || battery_adc == NULL ||
+         DPT_MAX_CMD <= 0 || DPT_MAX_CMD > 1800 ||
+         DPT_TARGET_MMPS <= 0.0f || DPT_TARGET_MMPS > 100.0f ||
+-        DPT_CIRC_M <= 0.0f || DPT_DURATION_MS == 0U ||
++        DPT_CIRC_M <= 0.0f || DPT_DISTANCE_MM <= 0.0f ||
++        DPT_DISTANCE_SLOW_MM <= 0.0f || DPT_DISTANCE_SLOW_MM >= DPT_DISTANCE_MM ||
++        DPT_DISTANCE_MIN_MMPS < 40.0f || DPT_DISTANCE_MIN_MMPS > DPT_TARGET_MMPS ||
++        DPT_DISTANCE_TIMEOUT_MS < 1000U || DPT_DISTANCE_TIMEOUT_MS > 10000U ||
++        DPT_DISTANCE_SETTLE_MS < 100U || DPT_DISTANCE_BRAKE_TIMEOUT_MS <= DPT_DISTANCE_SETTLE_MS ||
++        DPT_DURATION_MS == 0U ||
+         DPT_DURATION_MS > 3000U || DPT_MANUAL_MMPS < 40U ||
+         DPT_MANUAL_MMPS > DPT_MANUAL_MAX_MMPS ||
+         DPT_MANUAL_MAX_CMD <= 0 || DPT_MANUAL_MAX_CMD > 3000 ||
+@@ -304,7 +333,7 @@
+     float direction = targets[i] >= 0.0f ? 1.0f : -1.0f;
+     float measured = direction * w->velocity;
+     float target = direction * targets[i];
+-    int limit = (motion == MOVE_TEST || motion == MOVE_HEADING) ? DPT_MAX_CMD : DPT_MANUAL_MAX_CMD;
++    int limit = (motion == MOVE_TEST || motion == MOVE_HEADING || motion == MOVE_DISTANCE) ? DPT_MAX_CMD : DPT_MANUAL_MAX_CMD;
+     if (w->velocity > 350.0f || w->velocity < -350.0f) {
+         stop(FAST, wheel_name[i]); return;
+     }
+@@ -338,10 +367,12 @@
+     int enabled = HAL_GPIO_ReadPin(GPIOC, GPIO_PIN_13) == GPIO_PIN_RESET;
+     if (!enabled) {
+         on_seen = 0;
+-        if (state == RUNNING) stop(OFF, '-');
++        if (state == RUNNING || state == BRAKING) stop(OFF, '-');
+     } else if (!on_seen) { on_seen = 1; on_ms = now; }
+     if (state == RUNNING && (uint32_t)(now - start_ms) >= run_duration)
+-        stop(DONE, '-');
++        stop(motion == MOVE_DISTANCE ? TIMEOUT : DONE, '-');
++    if (state == BRAKING && (uint32_t)(now - brake_ms) >= DPT_DISTANCE_BRAKE_TIMEOUT_MS)
++        stop(SETTLE_BAD, '-');
+     if (switching && (uint32_t)(now - switch_ms) >= DPT_SWITCH_BRAKE_MS) switching = 0;
+ 
+     if ((uint32_t)(now - adc_ms) >= 100U) {
+@@ -351,7 +382,7 @@
+             bat_raw = HAL_ADC_GetValue(adc);
+             adc_ok = HAL_ADC_Stop(adc) == HAL_OK;
+         } else (void)HAL_ADC_Stop(adc);
+-        if (state == RUNNING) {
++        if (state == RUNNING || state == BRAKING) {
+             if (!adc_ok) stop(ADC_BAD, '-');
+             else if (bat_raw < DPT_MIN_BAT_RAW) stop(LOW, '-');
+         }
+@@ -403,7 +434,7 @@
+             dt_us = (uint32_t)((uint64_t)elapsed * 1000000U / hz);
+             if ((uint32_t)(now - old_ms) > 1000U || elapsed == 0U) {
+                 if (yaw_phase != Y_NONE) yaw_phase = Y_FAIL;
+-                if (state == RUNNING) stop(GAP, '-');
++                if (state == RUNNING || state == BRAKING) stop(GAP, '-');
+                 for (unsigned i = 0; i < 2U; ++i) wheels[i].velocity = 0.0f;
+             } else {
+                 float seconds = (float)elapsed / hz;
+@@ -413,17 +444,57 @@
+                 int wheels_moved = count[LEFT] != wheels[LEFT].old_count || count[RIGHT] != wheels[RIGHT].old_count;
+                 if (tick10_count - old_tick != 1U || dt_us < 5000U || dt_us > 15000U) {
+                     if (yaw_phase == Y_CAL || yaw_phase == Y_READY) yaw_phase = Y_FAIL;
+-                    if (state == RUNNING) stop(GAP, '-');
++                    if (state == RUNNING || state == BRAKING) stop(GAP, '-');
+                 } else sample_yaw(now, enabled, wheels_moved);
+                 /* Sensor I/O is bounded; recheck physical enable before any drive commit. */
+-                if (state == RUNNING && HAL_GPIO_ReadPin(GPIOC, GPIO_PIN_13) != GPIO_PIN_RESET)
++                if ((state == RUNNING || state == BRAKING) && HAL_GPIO_ReadPin(GPIOC, GPIO_PIN_13) != GPIO_PIN_RESET)
+                     stop(OFF, '-');
+-                if (state == RUNNING && motion == MOVE_HEADING) {
++                if ((state == RUNNING || state == BRAKING) &&
++                    (motion == MOVE_HEADING || motion == MOVE_DISTANCE) &&
++                    (yaw_phase != Y_READY || yaw_error > DPT_HEADING_MAX_ERROR || yaw_error < -DPT_HEADING_MAX_ERROR))
++                    stop(YAW_BAD, '-');
++                /* Accumulate signed wheel travel only from the fresh start snapshot.
++                   Reject timing/implausible counts before declaring distance completion. */
++                if (distance_tracking && (state == RUNNING || state == BRAKING)) {
++                    if (wheels[LEFT].velocity > 350.0f || wheels[LEFT].velocity < -350.0f)
++                        stop(FAST, 'L');
++                    else if (wheels[RIGHT].velocity > 350.0f || wheels[RIGHT].velocity < -350.0f)
++                        stop(FAST, 'R');
++                    else {
++                        for (unsigned i = 0; i < 2U; ++i) {
++                            distance_mm[i] += sign[i] * (float)delta16(count[i], distance_count[i])
++                                * DPT_CIRC_M * 1000.0f / cpr[i];
++                            distance_count[i] = count[i];
++                        }
++                        if (state == RUNNING && (distance_mm[LEFT] + distance_mm[RIGHT]) * 0.5f >= DPT_DISTANCE_MM)
++                            stop(BRAKING, '-');
++                        if (state == BRAKING) {
++                            if (wheels[LEFT].velocity >= -5.0f && wheels[LEFT].velocity <= 5.0f &&
++                                wheels[RIGHT].velocity >= -5.0f && wheels[RIGHT].velocity <= 5.0f) {
++                                if (!settle_seen) { settle_seen = 1; settle_ms = now; }
++                                else if ((uint32_t)(now - settle_ms) >= DPT_DISTANCE_SETTLE_MS) stop(DONE, '-');
++                            } else settle_seen = 0;
++                        }
++                    }
++                }
++                if (state == RUNNING && (motion == MOVE_HEADING || motion == MOVE_DISTANCE)) {
+                     if (yaw_phase != Y_READY || yaw_error > DPT_HEADING_MAX_ERROR || yaw_error < -DPT_HEADING_MAX_ERROR)
+                         stop(YAW_BAD, '-');
+                     else {
+-                        targets[LEFT] = DPT_TARGET_MMPS - yaw_diff;
+-                        targets[RIGHT] = DPT_TARGET_MMPS + yaw_diff;
++                        float base = DPT_TARGET_MMPS;
++                        if (motion == MOVE_DISTANCE) {
++                            float remaining = DPT_DISTANCE_MM - (distance_mm[LEFT] + distance_mm[RIGHT]) * 0.5f;
++                            if (remaining < DPT_DISTANCE_SLOW_MM) {
++                                base = DPT_TARGET_MMPS * remaining / DPT_DISTANCE_SLOW_MM;
++                                if (base < DPT_DISTANCE_MIN_MMPS) base = DPT_DISTANCE_MIN_MMPS;
++                            }
++                            distance_base = base;
++                            float max_diff = DPT_HEADING_MAX_DIFF * base / DPT_TARGET_MMPS;
++                            if (yaw_diff > max_diff) yaw_diff = max_diff;
++                            if (yaw_diff < -max_diff) yaw_diff = -max_diff;
++                        }
++                        targets[LEFT] = base - yaw_diff;
++                        targets[RIGHT] = base + yaw_diff;
+                     }
+                 }
+                 if (state == RUNNING) {
+@@ -442,14 +513,14 @@
+         old_cycles = cycles; old_tick = tick10_count; old_ms = now;
+     }
+ 
+-    if ((uint32_t)(now - log_ms) >= 200U) {
++    if ((uint32_t)(now - log_ms) >= (motion == MOVE_DISTANCE ? 400U : 200U)) {
+         static const char *const names[] = {"IDLE", "RUN", "DONE", "OFF", "LOW",
+-            "ADC", "GAP", "REV", "FAST", "STALL", "UART", "STOP", "YAW"};
+-        static const char *const modes[] = {"-", "TEST", "FWD", "BACK", "LEFT", "RIGHT", "HEAD"};
+-        char msg[160];
++            "ADC", "GAP", "REV", "FAST", "STALL", "UART", "STOP", "YAW", "BRAKE", "TIMEOUT", "SETTLE"};
++        static const char *const modes[] = {"-", "TEST", "FWD", "BACK", "LEFT", "RIGHT", "HEAD", "DIST"};
++        char msg[224];
+         int n = snprintf(msg, sizeof msg,
+             "DPI T=%d L=%d R=%d UL=%d UR=%d IL=%d IR=%d BAT=%lu DT=%lu ST=%s F=%c RXE=%lu TXD=%lu M=%s TL=%d TR=%d V=%u SEC=%lu\r\n",
+-            state == RUNNING ? ((motion == MOVE_TEST || motion == MOVE_HEADING) ? rounded(DPT_TARGET_MMPS) : (int)manual_speed) : 0,
++            state == RUNNING ? (motion == MOVE_DISTANCE ? rounded(distance_base) : ((motion == MOVE_TEST || motion == MOVE_HEADING || motion == MOVE_DISTANCE) ? rounded(DPT_TARGET_MMPS) : (int)manual_speed)) : 0,
+             rounded(wheels[LEFT].velocity), rounded(wheels[RIGHT].velocity),
+             wheels[LEFT].command, wheels[RIGHT].command,
+             rounded(wheels[LEFT].integral), rounded(wheels[RIGHT].integral),
+@@ -459,6 +530,15 @@
+             modes[motion], state == RUNNING ? rounded(targets[LEFT]) : 0,
+             state == RUNNING ? rounded(targets[RIGHT]) : 0, manual_speed,
+             (unsigned long)(manual_duration / 1000U));
++        if (motion == MOVE_DISTANCE && n > 1 && n < (int)sizeof msg) {
++            n -= 2; /* replace trailing CRLF with distance fields */
++            int added = snprintf(msg + n, sizeof msg - (size_t)n,
++                " S=%d SL=%d SR=%d G=%d\r\n",
++                rounded((distance_mm[LEFT] + distance_mm[RIGHT]) * 0.5f),
++                rounded(distance_mm[LEFT]), rounded(distance_mm[RIGHT]), rounded(DPT_DISTANCE_MM));
++            if (added <= 0 || added >= (int)(sizeof msg - (size_t)n)) n = (int)sizeof msg;
++            else n += added;
++        }
+         log_ms = now;
+         if (n <= 0 || n >= (int)sizeof msg) stop(UART_BAD, '-');
+         else {

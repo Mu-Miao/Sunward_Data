@@ -1,0 +1,1 @@
+PASS: LF04 O1=PC8/O2=PC4/O3=PC9/O4=PB8 raw mapping across all 16 combinations; OFF OLED and dual-port telemetry without motion; ON mileage/GO100 unchanged and LF inputs do not steer; key STOP/OFF priority, blocked TX, calibration/heading and ms wrap. No hardware opened.

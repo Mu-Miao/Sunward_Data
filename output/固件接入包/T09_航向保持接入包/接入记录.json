@@ -1,0 +1,16 @@
+{
+  "backup": "/Users/mzh/Desktop/车车/output/固件备份/Sunward_航向接入前备份_2026-10-09_jfu72yno",
+  "hardware_downloaded": false,
+  "target_mmps": 60,
+  "duration_ms": 3000,
+  "max_cmd": 1800,
+  "heading_gain_mmps_per_degree": 1,
+  "heading_max_diff_mmps": 15,
+  "source_files_changed": [
+    "Core/Inc/dual_pi_test.h",
+    "Core/Src/dual_pi_test.c",
+    "Core/Src/main.c"
+  ],
+  "hex_sha256": "4f0a2421f4dcd54a5f7bfc522e31b7177610abd1cefff5fc508d71f69d6565ab",
+  "build_returncode": 0
+}

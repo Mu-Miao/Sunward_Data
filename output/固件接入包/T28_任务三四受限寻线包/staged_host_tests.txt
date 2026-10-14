@@ -1,0 +1,21 @@
+motion_legacy_api: PASS: prior serial GO100/GO20/heading/manual motion regression, timing/MPU/ADC/encoder/UART protections, braking/coast/settle/completion and unchanged ON key start/busy STOP.
+TRACE hash=ecc2bda15e9e68b5 events=113009
+motion_car_app: PASS: prior serial GO100/GO20/heading/manual motion regression, timing/MPU/ADC/encoder/UART protections, braking/coast/settle/completion and unchanged ON key start/busy STOP.
+TRACE hash=ecc2bda15e9e68b5 events=113009
+task2_legacy_api: PASS: calibrated1256mm BC endpoint regression; Task2 GPIO-only AB->BC->CD->DA->A four-point signals and final settled stop; white straight/black arc switching gated by distance, debounce and end heading; preserved half-circle settings and task1 regressions; four-mode keys, no BLE required, no premature entry/false arc loss endpoint; bounded missing edges, STOP/OFF/RX/IMU/FAST/GAP/LOW/ADC/STALL/REV/timeout protections, restart/held-key suppression, OLED limits and time wrap. Simulation is not field acceptance.
+TRACE hash=5a6b9b2f58873ec7 events=130115
+task2_car_app: PASS: calibrated1256mm BC endpoint regression; Task2 GPIO-only AB->BC->CD->DA->A four-point signals and final settled stop; white straight/black arc switching gated by distance, debounce and end heading; preserved half-circle settings and task1 regressions; four-mode keys, no BLE required, no premature entry/false arc loss endpoint; bounded missing edges, STOP/OFF/RX/IMU/FAST/GAP/LOW/ADC/STALL/REV/timeout protections, restart/held-key suppression, OLED limits and time wrap. Simulation is not field acceptance.
+TRACE hash=5a6b9b2f58873ec7 events=130115
+task3_legacy_api: IDEAL target-following schedule: prior=40000 ms revised=35210 ms; hypothetical track=140mm, not field acceptance.
+PASS: actual CarApp scheduler Task3 GPIO selection/start, initial AB->AC right gyro turn/settle, AC->CB->BD->DA settled completion, five signals, zero inner PI, no reverse commands, old heading gate isolation, STOP/OFF/RX/MPU/ADC/LOW/FAST/REV/STALL/GAP, line/turn/time guards, restart, telemetry congestion, encoder/millis wrap. Simulation only.
+task3_car_app: IDEAL target-following schedule: prior=40000 ms revised=35210 ms; hypothetical track=140mm, not field acceptance.
+PASS: actual CarApp scheduler Task3 GPIO selection/start, initial AB->AC right gyro turn/settle, AC->CB->BD->DA settled completion, five signals, zero inner PI, no reverse commands, old heading gate isolation, STOP/OFF/RX/MPU/ADC/LOW/FAST/REV/STALL/GAP, line/turn/time guards, restart, telemetry congestion, encoder/millis wrap. Simulation only.
+task4_legacy_api: PASS: Task4 bounded stationary recovery/stable debounce/ramp, original deadline under chatter, exact deadline, invalid patterns, preserved loss snapshot, outer-probe slowdown, turn slowdown, protection priority and recovery millis wrap.
+IDEAL four-lap target-following schedule: 140950 ms; hypothetical track=140mm, not field acceptance.
+PASS: Task4 four laps, three settled automatic A joins, fixed gyro reference/total deadline, 17 signals, mode/commands/UI, later-lap protections/STOP priority, restart and wrap. Mock software only.
+task4_car_app: PASS: Task4 bounded stationary recovery/stable debounce/ramp, original deadline under chatter, exact deadline, invalid patterns, preserved loss snapshot, outer-probe slowdown, turn slowdown, protection priority and recovery millis wrap.
+IDEAL four-lap target-following schedule: 140950 ms; hypothetical track=140mm, not field acceptance.
+PASS: Task4 four laps, three settled automatic A joins, fixed gyro reference/total deadline, 17 signals, mode/commands/UI, later-lap protections/STOP priority, restart and wrap. Mock software only.
+seek_legacy_api: PASS: default Task3/4 completion, D miss bounded acquisition without false point signals, settled turn/yaw recheck, all-white bridge/reacquisition, all bounds, invalid/no-history rejection, chatter deadline and fault priority. Software only.
+seek_car_app: PASS: default Task3/4 completion, D miss bounded acquisition without false point signals, settled turn/yaw recheck, all-white bridge/reacquisition, all bounds, invalid/no-history rejection, chatter deadline and fault priority. Software only.
+PASS: motion/task2/task3/task4/seek regressions; CarApp and compatibility APIs; separate module linkage.

@@ -1,0 +1,44 @@
+{
+  "backup": "/Users/mzh/Desktop/车车/output/固件备份/Sunward_OLED接入前备份_2026-10-11_to31kzet",
+  "hardware_downloaded": false,
+  "oled_integrated": true,
+  "oled_physical_tested": false,
+  "oled_profile": "SSD1306 SPI 128x64 trial, not detected",
+  "oled_chunk_data_bytes": 8,
+  "oled_min_chunk_period_ms": 1,
+  "key_pin": "PA0/KEY_U",
+  "key_active_high": true,
+  "key_debounce_ms": 30,
+  "key_off_action": "CAL",
+  "key_on_ready_action": "GO100",
+  "key_busy_action": "STOP",
+  "led1": "250ms toggle during CAL, steady READY idle, 100ms toggle FAIL; completion owns both LEDs",
+  "go100_distance_mm": 1000,
+  "go100_cruise_mmps": 120,
+  "go100_timeout_ms": 13500,
+  "source_files_changed": [
+    "Core/Src/dual_pi_test.c",
+    "Core/Inc/task_oled.h",
+    "Core/Src/task_oled.c"
+  ],
+  "unchanged_files_checked": [
+    "Core/Src/main.c",
+    "Core/Src/mpu6050.c",
+    "Core/Src/soft_i2c.c",
+    "Core/Src/lab_uart_async.c",
+    "Core/Src/gpio.c",
+    "Sunward.ioc",
+    ".eide/eide.yml"
+  ],
+  "hex_sha256": "2649c47370be8b2dbddff3c77009f37511a8ba23caf41c01b01fd6032d4e3c46",
+  "build_returncode": 0,
+  "source_files_copied": [
+    "Core/Inc/dual_pi_test.h",
+    "Core/Src/dual_pi_test.c",
+    "Core/Inc/task_oled.h",
+    "Core/Src/task_oled.c"
+  ],
+  "build_config_changed": [
+    "build/Debug/builder.params: append Core/Src/task_oled.c"
+  ]
+}

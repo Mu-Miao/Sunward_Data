@@ -1,0 +1,399 @@
+--- a/Core/Src/dual_pi_test.c
++++ b/Core/Src/dual_pi_test.c
+@@ -6,9 +6,9 @@
+ #include <string.h>
+ 
+ typedef enum { IDLE, RUNNING, DONE, OFF, LOW, ADC_BAD, GAP,
+-               REVERSE, FAST, STALL, UART_BAD, STOPPED, YAW_BAD, BRAKING, TIMEOUT, SETTLE_BAD } TestState;
++               REVERSE, FAST, STALL, UART_BAD, STOPPED, YAW_BAD, BRAKING, TIMEOUT, SETTLE_BAD, LINE_LOST, LINE_BAD } TestState;
+ enum { LEFT = 0, RIGHT = 1 };
+-typedef enum { MOVE_NONE, MOVE_TEST, MOVE_FORWARD, MOVE_BACK, MOVE_LEFT, MOVE_RIGHT, MOVE_HEADING, MOVE_DISTANCE, MOVE_ROUTE } Motion;
++typedef enum { MOVE_NONE, MOVE_TEST, MOVE_FORWARD, MOVE_BACK, MOVE_LEFT, MOVE_RIGHT, MOVE_HEADING, MOVE_DISTANCE, MOVE_ROUTE, MOVE_LINE } Motion;
+ typedef enum { Y_NONE, Y_WARM, Y_CAL, Y_READY, Y_FAIL } YawPhase;
+ static YawPhase yaw_phase;
+ static uint8_t yaw_available, cal_requested;
+@@ -25,7 +25,14 @@
+ static uint8_t key_raw, key_stable, key_armed, key_press_enabled, ready_led_on;
+ static uint32_t key_change_ms, key_events, key_log_ms;
+ static uint32_t oled_render_ms, oled_log_ms, line_log_ms;
+-static uint8_t line_raw[4];
++static uint8_t line_raw[4], line_black[4], line_valid, line_count;
++static uint8_t line_center_seen, line_center_ready, line_invalid_seen;
++static uint32_t line_center_ms, line_sample_ms, line_invalid_ms;
++static float line_error, line_diff;
++static Motion key_motion;
++static void read_line(void);
++static void line_decode(void);
++static void line_sample(uint32_t now, int timing_ok);
+ static uint16_t distance_count[2];
+ static uint8_t distance_tracking, settle_seen;
+ static uint32_t brake_ms, settle_ms;
+@@ -61,7 +68,7 @@
+ static uint32_t adc_ms, log_ms, on_ms, bat_raw, dt_us;
+ static char fault_wheel;
+ static const char banner[] =
+-    "DPI KEY_U: OFF press=CAL; READY+ON press=GO100; busy press=STOP; RUN!/F!/B!/L!/R!/STOP!/CAL!/GO!/GO20!/GO100!; V40..300! TIME1..30!\r\n";
++    "DPI OFF KEY=CAL LF20!=select GO100!=select; READY+ON KEY=start; busy KEY=STOP; LF20!/GO20!/GO100!/GO!/RUN!/F!/B!/L!/R!/STOP!/CAL! V/TIME\r\n";
+ 
+ static void clear_controllers(void)
+ {
+@@ -74,7 +81,7 @@
+ 
+ static int is_distance(Motion m)
+ {
+-    return m == MOVE_DISTANCE || m == MOVE_ROUTE;
++    return m == MOVE_DISTANCE || m == MOVE_ROUTE || m == MOVE_LINE;
+ }
+ 
+ /* PC2/PC3 active low, PA15 active high; foreground only, no HAL_Delay. */
+@@ -88,7 +95,7 @@
+ 
+ static void stop(TestState why, char faulty)
+ {
+-    uint8_t completed_route = why == DONE && state == BRAKING && motion == MOVE_ROUTE;
++    uint8_t completed_route = why == DONE && state == BRAKING && (motion == MOVE_ROUTE || motion == MOVE_LINE);
+     drive(0, 0);
+     clear_controllers();
+     signal_set(0);
+@@ -243,6 +250,11 @@
+     if (state == BRAKING || yaw_phase == Y_WARM || yaw_phase == Y_CAL) return;
+     if ((requested == MOVE_HEADING || is_distance(requested)) && (state == RUNNING || yaw_phase != Y_READY)) return;
+     if (state == RUNNING && (requested == MOVE_TEST || requested == motion)) return;
++    if (requested == MOVE_LINE) {
++        line_decode(); /* Fresh GPIO gate; never start from an old OLED frame. */
++        if (!line_center_ready || (uint32_t)(now - line_sample_ms) > 15U ||
++            !line_valid || !line_black[1] || !line_black[2] || line_count != 2U) return;
++    }
+     if (!on_seen || (uint32_t)(now - on_ms) < 100U) stop(OFF, '-');
+     else if (!adc_ok || (uint32_t)(now - adc_ms) > 150U) stop(ADC_BAD, '-');
+     else if (bat_raw < DPT_MIN_BAT_RAW) stop(LOW, '-');
+@@ -268,10 +280,12 @@
+                 distance_count[i] = (uint16_t)__HAL_TIM_GET_COUNTER(wheels[i].encoder);
+                 distance_mm[i] = 0.0f;
+             }
+-            distance_goal = requested == MOVE_ROUTE ? DPT_ROUTE_MM : DPT_DISTANCE_MM;
+-            distance_cruise = requested == MOVE_ROUTE ? DPT_ROUTE_CRUISE_MMPS : DPT_TARGET_MMPS;
++            distance_goal = requested == MOVE_ROUTE ? DPT_ROUTE_MM : (requested == MOVE_LINE ? DPT_LINE_MM : DPT_DISTANCE_MM);
++            distance_cruise = requested == MOVE_ROUTE ? DPT_ROUTE_CRUISE_MMPS : (requested == MOVE_LINE ? DPT_LINE_CRUISE_MMPS : DPT_TARGET_MMPS);
+             distance_slow = requested == MOVE_ROUTE ? DPT_ROUTE_SLOW_MM : DPT_DISTANCE_SLOW_MM;
+-            distance_base = requested == MOVE_ROUTE ? DPT_ROUTE_START_MMPS : DPT_TARGET_MMPS;
++            distance_base = requested == MOVE_ROUTE ? DPT_ROUTE_START_MMPS : (requested == MOVE_LINE ? DPT_LINE_START_MMPS : DPT_TARGET_MMPS);
++            line_invalid_seen = 0U;
++            line_diff = 0.0f;
+             targets[LEFT] = targets[RIGHT] = distance_base;
+             distance_tracking = 1;
+             settle_seen = 0;
+@@ -305,6 +319,7 @@
+             *stop_requested = 1;
+         }
+         if (strcmp(in->text, "CAL") == 0 && state != RUNNING) cal_requested = 1;
++        if (strcmp(in->text, "LF20") == 0) *requested = MOVE_LINE;
+         if (strcmp(in->text, "GO20") == 0) *requested = MOVE_DISTANCE;
+         if (strcmp(in->text, "GO100") == 0) *requested = MOVE_ROUTE;
+         if (strcmp(in->text, "GO") == 0) *requested = MOVE_HEADING;
+@@ -347,6 +362,12 @@
+         left_encoder == right_encoder || battery_adc == NULL ||
+         DPT_MAX_CMD <= 0 || DPT_MAX_CMD > 1800 ||
+         DPT_TARGET_MMPS <= 0.0f || DPT_TARGET_MMPS > 100.0f ||
++        DPT_LINE_BLACK_LEVEL > 1U || DPT_LINE_MM != 200.0f ||
++        DPT_LINE_CRUISE_MMPS < 40.0f || DPT_LINE_CRUISE_MMPS > 60.0f ||
++        DPT_LINE_START_MMPS < 40.0f || DPT_LINE_START_MMPS > DPT_LINE_CRUISE_MMPS ||
++        DPT_LINE_GAIN <= 0.0f || DPT_LINE_MAX_DIFF <= 0.0f ||
++        DPT_LINE_MAX_DIFF > DPT_LINE_CRUISE_MMPS * 0.5f ||
++        DPT_LINE_CENTER_MS < 100U || DPT_LINE_INVALID_MS < 50U || DPT_LINE_INVALID_MS > 100U ||
+         DPT_CIRC_M <= 0.0f || DPT_DISTANCE_MM <= 0.0f ||
+         DPT_DISTANCE_SLOW_MM <= 0.0f || DPT_DISTANCE_SLOW_MM >= DPT_DISTANCE_MM ||
+         DPT_DISTANCE_MIN_MMPS < 40.0f || DPT_DISTANCE_MIN_MMPS > DPT_TARGET_MMPS ||
+@@ -403,6 +424,11 @@
+     oled_render_ms = now - 200U;
+     oled_log_ms = line_log_ms = now;
+     memset(line_raw, 0, sizeof line_raw);
++    memset(line_black, 0, sizeof line_black);
++    key_motion = MOVE_ROUTE; /* Boot remains the accepted independent 1m task. */
++    line_valid = line_count = line_center_seen = line_center_ready = line_invalid_seen = 0U;
++    line_center_ms = line_sample_ms = line_invalid_ms = now;
++    line_error = line_diff = 0.0f;
+     if (LabUART_Begin(u) != HAL_OK) return HAL_ERROR;
+     if (!LabUART_TryWrite(banner, sizeof banner - 1U)) return HAL_ERROR;
+     inputs[LAB_UART_USB].ms = now;
+@@ -457,8 +483,8 @@
+     if (w->stall_us >= 500000U) stop(STALL, wheel_name[i]);
+ }
+ 
+-/* LF04 raw electrical inputs only; physical order and black/white polarity
+-   remain to be measured. Static OFF diagnostics never steer or start motion. */
++/* Electrical OLED order is O1..O4. Field-measured physical L->R is O4..O1;
++   user corrected polarity and rechecked white=1111 / centre=1001. */
+ static void read_line(void)
+ {
+     line_raw[0] = HAL_GPIO_ReadPin(GPIOC, GPIO_PIN_8) == GPIO_PIN_SET;
+@@ -467,15 +493,72 @@
+     line_raw[3] = HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_8) == GPIO_PIN_SET;
+ }
+ 
++/* Digital centroid in physical left->right order. Only contiguous 1..3 black
++   probes are a line; all-white/all-black/split shapes are never an endpoint. */
++static void line_decode(void)
++{
++    static const int weight[4] = {-3, -1, 1, 3};
++    read_line();
++    int sum = 0, first = -1, last = -1;
++    line_count = 0U;
++    for (unsigned i = 0; i < 4U; ++i) {
++        line_black[i] = line_raw[3U - i] == DPT_LINE_BLACK_LEVEL;
++        if (line_black[i]) {
++            if (first < 0) first = (int)i;
++            last = (int)i;
++            ++line_count;
++            sum += weight[i];
++        }
++    }
++    line_valid = line_count > 0U && line_count < 4U && last - first + 1 == (int)line_count;
++    if (line_valid) line_error = (float)sum / line_count;
++}
++
++static void line_sample(uint32_t now, int timing_ok)
++{
++    if (key_motion != MOVE_LINE && motion != MOVE_LINE) return;
++    if (!timing_ok) { line_center_seen = line_center_ready = 0U; return; }
++    line_decode();
++    line_sample_ms = now;
++    if (line_valid && line_count == 2U && line_black[1] && line_black[2]) {
++        if (!line_center_seen) { line_center_seen = 1U; line_center_ms = now; }
++        line_center_ready = (uint32_t)(now - line_center_ms) >= DPT_LINE_CENTER_MS;
++    } else line_center_seen = line_center_ready = 0U;
++}
++
++static void line_targets(uint32_t now, float base)
++{
++    if (!line_valid) {
++        /* Immediate zero command; only transient recovery <100ms may resume.
++           A latched fault always needs a fresh centred start, never a search. */
++        drive(0, 0);
++        clear_controllers();
++        targets[LEFT] = targets[RIGHT] = line_diff = 0.0f;
++        if (!line_invalid_seen) { line_invalid_seen = 1U; line_invalid_ms = now; }
++        else if ((uint32_t)(now - line_invalid_ms) >= DPT_LINE_INVALID_MS)
++            stop(line_count == 0U ? LINE_LOST : LINE_BAD, '-');
++        return;
++    }
++    line_invalid_seen = 0U;
++    line_diff = DPT_LINE_GAIN * line_error * base / DPT_LINE_CRUISE_MMPS;
++    float limit = DPT_LINE_MAX_DIFF * base / DPT_LINE_CRUISE_MMPS;
++    if (line_diff > limit) line_diff = limit;
++    if (line_diff < -limit) line_diff = -limit;
++    /* Right-side black -> left wheel faster -> right turn. Both stay forward. */
++    targets[LEFT] = base + line_diff;
++    targets[RIGHT] = base - line_diff;
++}
++
+ /* Low-rate text snapshots; SPI is sent in bounded chunks after control. */
+ static void update_oled(uint32_t now, int enabled)
+ {
+     if ((uint32_t)(now - oled_render_ms) >= 200U) {
+         static const char *const phases[] = {"NONE", "WARM", "CAL", "READY", "FAIL"};
+         static const char *const states[] = {"IDLE", "RUN", "DONE", "OFF", "LOW",
+-            "ADC", "GAP", "REV", "FAST", "STALL", "UART", "STOP", "YAW", "BRAKE", "TIMEOUT", "SETTLE"};
++            "ADC", "GAP", "REV", "FAST", "STALL", "UART", "STOP", "YAW", "BRAKE", "TIMEOUT", "SETTLE", "LOST", "LINE"};
+         const char *title = "TASK 1 A->B";
+-        if (motion == MOVE_DISTANCE) title = "TEST GO20";
++        if (motion == MOVE_LINE || (motion == MOVE_NONE && key_motion == MOVE_LINE)) title = "TEST LF20";
++        else if (motion == MOVE_DISTANCE) title = "TEST GO20";
+         else if (motion == MOVE_HEADING) title = "TEST GO";
+         else if (motion == MOVE_TEST) title = "TEST RUN";
+         else if (motion != MOVE_NONE && motion != MOVE_ROUTE) title = "MANUAL";
+@@ -486,7 +569,11 @@
+             read_line();
+             (void)snprintf(progress, sizeof progress, "LF %u %u %u %u",
+                 (unsigned)line_raw[0], (unsigned)line_raw[1], (unsigned)line_raw[2], (unsigned)line_raw[3]);
+-        } else if (is_distance(motion))
++        } else if (motion == MOVE_LINE || (motion == MOVE_NONE && key_motion == MOVE_LINE))
++            (void)snprintf(progress, sizeof progress, "LF%u%u%u%u S%d/200",
++                (unsigned)line_raw[0], (unsigned)line_raw[1], (unsigned)line_raw[2], (unsigned)line_raw[3],
++                rounded((distance_mm[LEFT] + distance_mm[RIGHT]) * 0.5f));
++        else if (is_distance(motion))
+             (void)snprintf(progress, sizeof progress, "S %d/%dmm",
+                 rounded((distance_mm[LEFT] + distance_mm[RIGHT]) * 0.5f), rounded(distance_goal));
+         else if (motion == MOVE_NONE)
+@@ -506,9 +593,14 @@
+             if (bluetooth_on) (void)LabUART_TryWritePort(LAB_UART_BT, msg, (uint16_t)n);
+         }
+     }
+-    if (!enabled && (uint32_t)(now - line_log_ms) >= 1000U) {
+-        char msg[64];
+-        int n = snprintf(msg, sizeof msg, "LINE O1=%u O2=%u O3=%u O4=%u\r\n",
++    if ((!enabled || key_motion == MOVE_LINE || motion == MOVE_LINE) && (uint32_t)(now - line_log_ms) >= 1000U) {
++        char msg[128];
++        int n;
++        if (key_motion == MOVE_LINE || motion == MOVE_LINE)
++            n = snprintf(msg, sizeof msg, "LINE RAW=%u%u%u%u E100=%d C=%d VALID=%u CENTER=%u MODE=LF20\r\n",
++                (unsigned)line_raw[0], (unsigned)line_raw[1], (unsigned)line_raw[2], (unsigned)line_raw[3],
++                rounded(line_error * 100.0f), rounded(line_diff), (unsigned)line_valid, (unsigned)line_center_ready);
++        else n = snprintf(msg, sizeof msg, "LINE O1=%u O2=%u O3=%u O4=%u\r\n",
+             (unsigned)line_raw[0], (unsigned)line_raw[1], (unsigned)line_raw[2], (unsigned)line_raw[3]);
+         line_log_ms = now;
+         if (n > 0 && n < (int)sizeof msg) {
+@@ -580,6 +672,21 @@
+             else in->discard = 1;
+         }
+     }
++    /* OFF selection is separate from starting. No pending movement is kept.
++       Serial STOP/RX errors or a busy press cannot select or queue a restart. */
++    if (!enabled && !was_busy && !stop_requested &&
++        (requested == MOVE_LINE || requested == MOVE_ROUTE)) {
++        key_motion = requested;
++        motion = MOVE_NONE;
++        distance_tracking = 0U;
++        distance_mm[LEFT] = distance_mm[RIGHT] = 0.0f;
++        distance_goal = key_motion == MOVE_LINE ? DPT_LINE_MM : DPT_ROUTE_MM;
++        line_center_seen = line_center_ready = line_invalid_seen = 0U;
++        line_diff = 0.0f;
++        key_log_ms = now - 1000U;
++        oled_render_ms = now - 200U;
++        requested = MOVE_NONE;
++    }
+     if (key_pressed) {
+         key_action = KEY_BLOCK;
+         /* Both serial ports have been scanned: STOP/RX fault has priority. */
+@@ -592,7 +699,7 @@
+                 cal_requested = 1;
+                 key_action = KEY_CAL;
+             } else if (enabled && yaw_phase == Y_READY && !cal_requested) {
+-                requested = MOVE_ROUTE;
++                requested = key_motion;
+                 key_action = KEY_START;
+             } else key_action = KEY_WAIT;
+         }
+@@ -604,7 +711,7 @@
+         requested = MOVE_NONE; /* CAL never queues movement for later. */
+     }
+     if (requested != MOVE_NONE && !stop_requested) request_motion(requested, now);
+-    if (key_pressed && key_action == KEY_START && (state != RUNNING || motion != MOVE_ROUTE))
++    if (key_pressed && key_action == KEY_START && (state != RUNNING || motion != key_motion))
+         key_action = KEY_BLOCK;
+ 
+     if (!primed || tick10_count != old_tick) {
+@@ -616,6 +723,7 @@
+             uint32_t elapsed = cycles - old_cycles;
+             dt_us = (uint32_t)((uint64_t)elapsed * 1000000U / hz);
+             if ((uint32_t)(now - old_ms) > 1000U || elapsed == 0U) {
++                line_sample(now, 0);
+                 if (yaw_phase != Y_NONE) yaw_phase = Y_FAIL;
+                 if (state == RUNNING || state == BRAKING) stop(GAP, '-');
+                 for (unsigned i = 0; i < 2U; ++i) wheels[i].velocity = 0.0f;
+@@ -629,12 +737,13 @@
+                     if (yaw_phase == Y_CAL || yaw_phase == Y_READY) yaw_phase = Y_FAIL;
+                     if (state == RUNNING || state == BRAKING) stop(GAP, '-');
+                 } else sample_yaw(now, enabled, wheels_moved);
++                line_sample(now, tick10_count - old_tick == 1U && dt_us >= 5000U && dt_us <= 15000U);
+                 /* Sensor I/O is bounded; recheck physical enable before any drive commit. */
+                 if ((state == RUNNING || state == BRAKING) && HAL_GPIO_ReadPin(GPIOC, GPIO_PIN_13) != GPIO_PIN_RESET)
+                     stop(OFF, '-');
+                 if ((state == RUNNING || state == BRAKING) &&
+                     (motion == MOVE_HEADING || is_distance(motion)) &&
+-                    (yaw_phase != Y_READY || yaw_error > DPT_HEADING_MAX_ERROR || yaw_error < -DPT_HEADING_MAX_ERROR))
++                    (yaw_phase != Y_READY || (motion != MOVE_LINE && (yaw_error > DPT_HEADING_MAX_ERROR || yaw_error < -DPT_HEADING_MAX_ERROR))))
+                     stop(YAW_BAD, '-');
+                 /* Accumulate signed wheel travel only from the fresh start snapshot.
+                    Reject timing/implausible counts before declaring distance completion. */
+@@ -649,7 +758,7 @@
+                                 * DPT_CIRC_M * 1000.0f / cpr[i];
+                             distance_count[i] = count[i];
+                         }
+-                        if (state == RUNNING && (distance_mm[LEFT] + distance_mm[RIGHT]) * 0.5f >= distance_goal)
++                        if (state == RUNNING && (motion != MOVE_LINE || line_valid) && (distance_mm[LEFT] + distance_mm[RIGHT]) * 0.5f >= distance_goal)
+                             stop(BRAKING, '-');
+                         if (state == BRAKING) {
+                             if (wheels[LEFT].velocity >= -5.0f && wheels[LEFT].velocity <= 5.0f &&
+@@ -661,7 +770,7 @@
+                     }
+                 }
+                 if (state == RUNNING && (motion == MOVE_HEADING || is_distance(motion))) {
+-                    if (yaw_phase != Y_READY || yaw_error > DPT_HEADING_MAX_ERROR || yaw_error < -DPT_HEADING_MAX_ERROR)
++                    if (yaw_phase != Y_READY || (motion != MOVE_LINE && (yaw_error > DPT_HEADING_MAX_ERROR || yaw_error < -DPT_HEADING_MAX_ERROR)))
+                         stop(YAW_BAD, '-');
+                     else {
+                         float base = DPT_TARGET_MMPS;
+@@ -672,8 +781,8 @@
+                                 base = distance_cruise * remaining / distance_slow;
+                                 if (base < DPT_DISTANCE_MIN_MMPS) base = DPT_DISTANCE_MIN_MMPS;
+                             }
+-                            if (motion == MOVE_ROUTE) {
+-                                float ramp = DPT_ROUTE_START_MMPS + DPT_ROUTE_ACCEL_MMPS2 * ((float)(uint32_t)(now - start_ms) / 1000.0f);
++                            if (motion == MOVE_ROUTE || motion == MOVE_LINE) {
++                                float ramp = (motion == MOVE_LINE ? DPT_LINE_START_MMPS : DPT_ROUTE_START_MMPS) + DPT_ROUTE_ACCEL_MMPS2 * ((float)(uint32_t)(now - start_ms) / 1000.0f);
+                                 if (base > ramp) base = ramp;
+                             }
+                             distance_base = base;
+@@ -681,14 +790,17 @@
+                             if (yaw_diff > max_diff) yaw_diff = max_diff;
+                             if (yaw_diff < -max_diff) yaw_diff = -max_diff;
+                         }
+-                        targets[LEFT] = base - yaw_diff;
+-                        targets[RIGHT] = base + yaw_diff;
++                        if (motion == MOVE_LINE) line_targets(now, base);
++                        else {
++                            targets[LEFT] = base - yaw_diff;
++                            targets[RIGHT] = base + yaw_diff;
++                        }
+                     }
+                 }
+                 if (state == RUNNING) {
+                     if (tick10_count - old_tick != 1U || dt_us < 5000U || dt_us > 15000U)
+                         stop(GAP, '-');
+-                    else if (!switching) {
++                    else if (!switching && (motion != MOVE_LINE || line_valid)) {
+                         for (unsigned i = 0; i < 2U && state == RUNNING; ++i)
+                             control_wheel(i, seconds);
+                         /* Commit both commands only if both wheels passed their checks. */
+@@ -703,8 +815,8 @@
+ 
+     if ((uint32_t)(now - log_ms) >= (is_distance(motion) ? 400U : 200U)) {
+         static const char *const names[] = {"IDLE", "RUN", "DONE", "OFF", "LOW",
+-            "ADC", "GAP", "REV", "FAST", "STALL", "UART", "STOP", "YAW", "BRAKE", "TIMEOUT", "SETTLE"};
+-        static const char *const modes[] = {"-", "TEST", "FWD", "BACK", "LEFT", "RIGHT", "HEAD", "DIST", "DIST"};
++            "ADC", "GAP", "REV", "FAST", "STALL", "UART", "STOP", "YAW", "BRAKE", "TIMEOUT", "SETTLE", "LOST", "LINE"};
++        static const char *const modes[] = {"-", "TEST", "FWD", "BACK", "LEFT", "RIGHT", "HEAD", "DIST", "DIST", "LINE"};
+         char msg[224];
+         int n = snprintf(msg, sizeof msg,
+             "DPI T=%d L=%d R=%d UL=%d UR=%d IL=%d IR=%d BAT=%lu DT=%lu ST=%s F=%c RXE=%lu TXD=%lu M=%s TL=%d TR=%d V=%u SEC=%lu\r\n",
+@@ -727,7 +839,7 @@
+             if (added <= 0 || added >= (int)(sizeof msg - (size_t)n)) n = (int)sizeof msg;
+             else n += added;
+         }
+-        if (motion == MOVE_ROUTE && n > 1 && n < (int)sizeof msg) {
++        if ((motion == MOVE_ROUTE || motion == MOVE_LINE) && n > 1 && n < (int)sizeof msg) {
+             n -= 2;
+             int added = snprintf(msg + n, sizeof msg - (size_t)n, " SIG=%u\r\n", (unsigned)completion_signal);
+             if (added <= 0 || added >= (int)(sizeof msg - (size_t)n)) n = (int)sizeof msg;
+@@ -760,9 +872,9 @@
+     if ((uint32_t)(now - key_log_ms) >= 1000U) {
+         static const char *const actions[] = {"-", "CAL", "START", "STOP", "WAIT", "BLOCK"};
+         char msg[96];
+-        int n = snprintf(msg, sizeof msg, "KEY EN=%u RAW=%u ARM=%u EVT=%lu ACT=%s TASK=1\r\n",
++        int n = snprintf(msg, sizeof msg, "KEY EN=%u RAW=%u ARM=%u EVT=%lu ACT=%s %s\r\n",
+             (unsigned)enabled, (unsigned)key_raw, (unsigned)key_armed,
+-            (unsigned long)key_events, actions[key_action]);
++            (unsigned long)key_events, actions[key_action], key_motion == MOVE_LINE ? "TEST=LF20" : "TASK=1");
+         key_log_ms = now;
+         if (n > 0 && n < (int)sizeof msg) {
+             (void)LabUART_TryWrite(msg, (uint16_t)n);
+--- a/Core/Inc/dual_pi_test.h
++++ b/Core/Inc/dual_pi_test.h
+@@ -45,6 +45,16 @@
+ #define DPT_ROUTE_SIGNAL_MS 500U
+ /* C10B KEY_U: PA0 active high, stable release required before each press. */
+ #define DPT_KEY_DEBOUNCE_MS 30U
++/* LF04 field correction: raw black=0, white=1; physical L->R O4/O3/O2/O1.
++   Short direction trial only; these gains are not field-accepted arc tuning. */
++#define DPT_LINE_BLACK_LEVEL 0U
++#define DPT_LINE_MM 200.0f
++#define DPT_LINE_CRUISE_MMPS 60.0f
++#define DPT_LINE_START_MMPS 40.0f
++#define DPT_LINE_GAIN 8.0f
++#define DPT_LINE_MAX_DIFF 24.0f
++#define DPT_LINE_CENTER_MS 100U
++#define DPT_LINE_INVALID_MS 100U
+ void DualPITest_EnableHeading(int mpu_initialized);
+ void DualPITest_Poll(uint32_t tick10_count);
+ #endif

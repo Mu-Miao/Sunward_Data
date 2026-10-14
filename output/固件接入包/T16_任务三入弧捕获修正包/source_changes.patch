@@ -1,0 +1,55 @@
+--- a/Core/Src/car_task3.c
++++ b/Core/Src/car_task3.c
+@@ -270,7 +270,10 @@
+             }
+         } else {
+             stable(r, 0, i->now_ms);
+-            o->control = T3_HOLD_HEADING;
++            /* An off-centre but valid line is already feedback. Follow it
++               toward the centre rather than driving past it on a fixed yaw.
++               White/invalid input still uses the bounded tangent approach. */
++            o->control = i->line_valid ? T3_FOLLOW_LINE : T3_HOLD_HEADING;
+             o->heading_deg = target;
+             o->base_mmps = r->config.capture_mmps;
+         }
+--- a/tools/tests/test_task3.c
++++ b/tools/tests/test_task3.c
+@@ -94,9 +94,38 @@
+  assert(app()->runtime.state==YAW_BAD && app()->route.task3.fault==T3_TURN && a==0 && b==0);
+  /* Stop dominates the startup gyro turn. */
+  task3_start();queue(0,"STOP!");step(10,0,0);assert(app()->runtime.state==STOPPED && a==0 && b==0);
++ /* C capture: off-centre black must steer before centred entry, not hold yaw. */
++ task3_start();reach_phase(T3_CAPTURE);line_inputs=11;step(10,0,0);
++ assert(app()->runtime.state==RUNNING && app()->route.task3.phase==T3_CAPTURE);
++ assert(app()->route.targets[0]<app()->route.targets[1] && app()->route.targets[0]>0);
++ line_inputs=13;step(10,0,0);
++ assert(app()->route.targets[0]>app()->route.targets[1] && app()->route.targets[1]>0);
++ line_inputs=9;for(unsigned i=0;i<4;i++)step(10,0,0);
++ assert(app()->route.task3.phase==T3_ARC && fabsf(progress())<0.01f);
++ /* White approach remains heading-controlled and strictly bounded. */
++ task3_start();reach_phase(T3_CAPTURE);line_inputs=15;step(10,0,0);
++ assert(app()->runtime.state==RUNNING && app()->route.task3.phase==T3_CAPTURE && app()->route.targets[0]>0 && app()->route.targets[1]>0);
++ app()->route.task3.phase_ms=ms-app()->route.task3.config.capture_timeout_ms;
++ step(10,0,0);assert(app()->runtime.state==LINE_BAD && app()->route.task3.fault==T3_EDGE && a==0 && b==0);
++ /* User display LINE CB F6 S1319 can be capture overtravel, not arc overtravel. */
++ task3_start();reach_phase(T3_CAPTURE);line_inputs=11;
++ app()->route.task3.leg_start_mm=0;app()->route.task3.phase_start_mm=1258;
++ app()->route.distance_mm[0]=app()->route.distance_mm[1]=1319;
++ step(10,0,0);assert(app()->runtime.state==LINE_BAD && app()->route.task3.fault==T3_EDGE && fabsf(progress()-1319)<0.01f);
++ float stopped_progress=progress();unsigned stopped_fault=app()->route.task3.fault;
++ step(10,700,650);assert(progress()==stopped_progress && app()->route.task3.fault==stopped_fault && a==0 && b==0);
++ /* Keep valid but uncentred capture inside the same 60mm limit. */
++ task3_start();reach_phase(T3_CAPTURE);line_inputs=13;
++ app()->route.distance_mm[0]=app()->route.distance_mm[1]=app()->route.task3.phase_start_mm+61;
++ step(10,0,0);assert(app()->runtime.state==LINE_BAD && app()->route.task3.fault==T3_EDGE && a==0 && b==0);
+  /* Turns bypass the legacy 20deg heading trip, zero wheel clears old integral. */
+  task3_start();reach_phase(T3_ALIGN);app()->wheel.items[0].integral=1700;step(10,0,0);
+  assert(app()->runtime.state==RUNNING && app()->route.targets[0]==0 && app()->wheel.items[0].integral==0 && b==0 && a>0);
++ /* D capture uses the same line feedback without reversing either wheel. */
++ task3_start();for(unsigned i=0;i<3500&&app()->runtime.state==RUNNING && !(app()->route.task3.phase==T3_CAPTURE && app()->route.task3.leg==3U);i++)step_route();
++ assert(app()->route.task3.phase==T3_CAPTURE && app()->route.task3.leg==3U);
++ line_inputs=11;step(10,0,0);assert(app()->route.targets[0]<app()->route.targets[1] && app()->route.targets[0]>0);
++ line_inputs=9;for(unsigned i=0;i<4;i++)step(10,0,0);assert(app()->route.task3.phase==T3_ARC);
+  /* Preserve specific app protection reasons and cancel task core in each phase. */
+  for(unsigned k=0;k<12;k++) {
+   task3_start();if(k>=6)reach_phase(T3_ARC);

@@ -1,0 +1,30 @@
+2026-10-08：当前Sunward main三处接入替换，在临时目录完成全工程ARM编译与链接，包含原右轮模块及新增左轮模块，无重复符号。
+ELF: /private/tmp/leftpi-check-wqxtbgf8/Sunward_leftpi_check.elf
+只读Sunward，未修改现场工程或烧录。
+/private/tmp/leftpi-check-wqxtbgf8/main.c:331:12: warning: 'Lab_PIForward' defined but not used [-Wunused-function]
+  331 | static int Lab_PIForward(LabPI *pi, float target_mps, float measured_mps,
+      |            ^~~~~~~~~~~~~
+/private/tmp/leftpi-check-wqxtbgf8/main.c:318:14: warning: 'Lab_WheelSpeed' defined but not used [-Wunused-function]
+  318 | static float Lab_WheelSpeed(int32_t delta, int forward_sign,
+      |              ^~~~~~~~~~~~~~
+/private/tmp/leftpi-check-wqxtbgf8/main.c:295:13: warning: 'Lab_PrintMPURaw' defined but not used [-Wunused-function]
+  295 | static void Lab_PrintMPURaw(void)
+      |             ^~~~~~~~~~~~~~~
+/private/tmp/leftpi-check-wqxtbgf8/main.c:278:13: warning: 'Lab_PrintBatteryRaw' defined but not used [-Wunused-function]
+  278 | static void Lab_PrintBatteryRaw(void)
+      |             ^~~~~~~~~~~~~~~~~~~
+/private/tmp/leftpi-check-wqxtbgf8/main.c:257:13: warning: 'Lab_PrintTickRate' defined but not used [-Wunused-function]
+  257 | static void Lab_PrintTickRate(void)
+      |             ^~~~~~~~~~~~~~~~~
+/private/tmp/leftpi-check-wqxtbgf8/main.c:236:13: warning: 'Lab_PrintEncoders' defined but not used [-Wunused-function]
+  236 | static void Lab_PrintEncoders(void)
+      |             ^~~~~~~~~~~~~~~~~
+/private/tmp/leftpi-check-wqxtbgf8/main.c:205:13: warning: 'Lab_MotorTestOnce' defined but not used [-Wunused-function]
+  205 | static void Lab_MotorTestOnce(void)
+      |             ^~~~~~~~~~~~~~~~~
+/private/tmp/leftpi-check-wqxtbgf8/main.c:149:13: warning: 'Lab_PrintLine' defined but not used [-Wunused-function]
+  149 | static void Lab_PrintLine(void)
+      |             ^~~~~~~~~~~~~
+/private/tmp/leftpi-check-wqxtbgf8/main.c:61:17: warning: 'line_log_ms' defined but not used [-Wunused-variable]
+   61 | static uint32_t line_log_ms = 0U;
+      |                 ^~~~~~~~~~~

@@ -1,0 +1,253 @@
+--- a/Core/Inc/car_config.h
++++ b/Core/Inc/car_config.h
+@@ -65,7 +65,8 @@
+ #define DPT_TASK2_EXIT_WINDOW_MM 200.0f
+ #define DPT_TASK2_EDGE_MS 30U
+ #define DPT_TASK2_END_ANGLE_DEG 20.0f
+-/* Task 3 geometry and join guards; start A facing C. Positive yaw is left. */
++/* Task 3 geometry and join guards; start A facing B, then gyro turns right to AC. Positive yaw is left. */
++#define DPT_TASK3_START_FROM_AB 1U /* User: initial heading A->B. */
+ #define DPT_TASK3_SPAN_MM 1000.0f
+ #define DPT_TASK3_RADIUS_MM 400.0f
+ #define DPT_TASK3_ARC_MM 1256.0f
+--- a/Core/Inc/car_task3.h
++++ b/Core/Inc/car_task3.h
+@@ -3,9 +3,9 @@
+ #include <stdint.h>
+ 
+ /* Foreground-only route core. No HAL, PWM, GPIO, UART or global state.
+- * Yaw increases on a left turn. Place A facing C before Start(). */
++ * Yaw increases on a left turn. Place A facing B before Start(); gyro aligns to AC. */
+ typedef enum { T3_IDLE, T3_DIAGONAL, T3_VERTEX_BRAKE, T3_ALIGN,
+-    T3_CAPTURE, T3_ARC, T3_FINAL_BRAKE, T3_DONE, T3_FAULT } CarTask3Phase;
++    T3_CAPTURE, T3_ARC, T3_FINAL_BRAKE, T3_DONE, T3_FAULT, T3_START_ALIGN, T3_START_SETTLE } CarTask3Phase;
+ typedef enum { T3_OK, T3_CONFIG, T3_ABORT, T3_SENSOR, T3_TIMEOUT,
+     T3_HEADING, T3_EDGE, T3_LOST, T3_TURN, T3_SETTLE, T3_DISTANCE } CarTask3Fault;
+ typedef enum { T3_HALT, T3_HOLD_HEADING, T3_TURN_FORWARD,
+@@ -15,6 +15,7 @@
+ 
+ typedef struct {
+     float span_mm, radius_mm, arc_mm;
++    uint8_t start_from_ab; /* 1: initial nose A->B; 0: already A->C. */
+     float diagonal_mmps, arc_mmps, start_mmps, acceleration_mmps2;
+     float turn_mmps, capture_mmps;
+     float entry_window_mm, exit_window_mm, turn_travel_limit_mm;
+@@ -47,7 +48,7 @@
+     uint8_t leg; /* 0 AC, 1 CB, 2 BD, 3 DA */
+     uint8_t edge_seen, settled_seen, lost_seen, pending_start_signal;
+     uint32_t start_ms, phase_ms, edge_ms, settled_ms, lost_start_ms;
+-    uint32_t previous_ms, elapsed_ms;
++    uint32_t previous_ms, elapsed_ms, start_settle_ms;
+     float diagonal_mm, diagonal_angle_deg, start_heading_deg;
+     float leg_start_mm, phase_start_mm;
+ } CarTask3;
+--- a/Core/Src/car_task3.c
++++ b/Core/Src/car_task3.c
+@@ -12,6 +12,7 @@
+ static int bounded_time(uint32_t t) { return t > 0U && t <= 80000U; }
+ static int config_valid(const CarTask3Config *c)
+ {
++    if (c->start_from_ab > 1U) return 0;
+     if (!positive(c->span_mm) || !positive(c->radius_mm) || !positive(c->arc_mm) ||
+         !positive(c->diagonal_mmps) || !positive(c->arc_mmps) ||
+         !positive(c->start_mmps) || !positive(c->acceleration_mmps2) ||
+@@ -96,7 +97,7 @@
+ CarTask3Config CarTask3_DefaultConfig(void)
+ {
+     CarTask3Config c = {
+-        .span_mm=1000.0f, .radius_mm=400.0f, .arc_mm=1256.0f,
++        .span_mm=1000.0f, .radius_mm=400.0f, .arc_mm=1256.0f, .start_from_ab=1U,
+         .diagonal_mmps=200.0f, .arc_mmps=200.0f, .start_mmps=50.0f,
+         .acceleration_mmps2=100.0f, .turn_mmps=60.0f, .capture_mmps=50.0f,
+         .entry_window_mm=120.0f, .exit_window_mm=200.0f,
+@@ -122,10 +123,12 @@
+     r->config = *c;
+     r->diagonal_mm = hypotf(c->span_mm, 2.0f * c->radius_mm);
+     r->diagonal_angle_deg = atan2f(2.0f * c->radius_mm, c->span_mm) * 57.2957795131f;
+-    r->start_heading_deg = wrap(i->yaw_deg);
++    /* Preserve a fixed AC reference even if the gyro has a nonzero zero offset.
++       AB is the known physical initial direction, positive yaw is left. */
++    r->start_heading_deg = wrap(i->yaw_deg - (c->start_from_ab ? r->diagonal_angle_deg : 0.0f));
+     r->start_ms = r->phase_ms = r->previous_ms = i->now_ms;
+     r->leg_start_mm = r->phase_start_mm = i->distance_mm;
+-    r->phase = T3_DIAGONAL;
++    r->phase = c->start_from_ab ? T3_START_ALIGN : T3_DIAGONAL;
+     r->pending_start_signal = 1U;
+     return 1;
+ }
+@@ -192,28 +195,54 @@
+                 o->base_mmps = speed(r, i, r->config.arc_mmps, r->config.arc_mm - progress);
+             }
+         }
+-    } else if (r->phase == T3_VERTEX_BRAKE || r->phase == T3_FINAL_BRAKE) {
+-        if ((uint32_t)(i->now_ms - r->phase_ms) >= r->config.brake_timeout_ms) fault(r, T3_SETTLE);
++    } else if (r->phase == T3_VERTEX_BRAKE || r->phase == T3_FINAL_BRAKE || r->phase == T3_START_SETTLE) {
++        if (r->phase == T3_START_SETTLE &&
++            ((uint32_t)(i->now_ms - r->phase_ms) >= r->config.align_timeout_ms ||
++             phase_travel > r->config.turn_travel_limit_mm)) fault(r, T3_TURN);
++        else if ((uint32_t)(i->now_ms - (r->phase == T3_START_SETTLE ? r->start_settle_ms : r->phase_ms)) >= r->config.brake_timeout_ms)
++            fault(r, T3_SETTLE);
++        else if (r->phase == T3_START_SETTLE &&
++            fabsf(wrap(r->start_heading_deg - i->yaw_deg)) > r->config.align_tolerance_deg) {
++            /* Retain the original initial-turn timeout/distance budget. */
++            r->phase = T3_START_ALIGN;
++            r->settled_seen = r->edge_seen = 0U;
++            o->reset_controllers = 1U;
++        }
+         else if (fabsf(i->left_mmps) <= 5.0f && fabsf(i->right_mmps) <= 5.0f) {
+             if (!r->settled_seen) { r->settled_seen = 1U; r->settled_ms = i->now_ms; }
+             if ((uint32_t)(i->now_ms - r->settled_ms) >= r->config.settle_ms) {
+                 if (r->phase == T3_FINAL_BRAKE) {
+                     phase(r, T3_DONE, i, o);
+                     o->signal_point = T3_POINT_A;
++                } else if (r->phase == T3_START_SETTLE) {
++                    /* A rotation includes signed mean travel. Establish AC's
++                       new baseline only after gyro alignment and settled wheels. */
++                    phase(r, T3_DIAGONAL, i, o);
++                    r->leg_start_mm = i->distance_mm;
+                 } else {
+                     ++r->leg;
+                     phase(r, T3_ALIGN, i, o);
+                 }
+             }
+         } else r->settled_seen = 0U;
+-    } else if (r->phase == T3_ALIGN) {
+-        float target = align_heading(r), error = wrap(target - i->yaw_deg);
++    } else if (r->phase == T3_ALIGN || r->phase == T3_START_ALIGN) {
++        float target = r->phase == T3_START_ALIGN ? r->start_heading_deg : align_heading(r);
++        float error = wrap(target - i->yaw_deg);
+         if ((uint32_t)(i->now_ms - r->phase_ms) >= r->config.align_timeout_ms ||
+             phase_travel > r->config.turn_travel_limit_mm) fault(r, T3_TURN);
+         else if (fabsf(error) <= r->config.align_tolerance_deg) {
+             o->reset_controllers = 1U;
+             if (stable(r, 1, i->now_ms)) {
+-                if (r->leg & 1U) phase(r, T3_CAPTURE, i, o);
++                if (r->phase == T3_START_ALIGN) {
++                    /* Keep a separate settle timer while retaining turn limits. */
++                    uint32_t turn_ms = r->phase_ms;
++                    float turn_origin = r->phase_start_mm;
++                    phase(r, T3_START_SETTLE, i, o);
++                    r->start_settle_ms = i->now_ms;
++                    r->phase_ms = turn_ms;
++                    r->phase_start_mm = turn_origin;
++                }
++                else if (r->leg & 1U) phase(r, T3_CAPTURE, i, o);
+                 else {
+                     phase(r, T3_DIAGONAL, i, o);
+                     r->leg_start_mm = i->distance_mm;
+--- a/Core/Src/car_ui.c
++++ b/Core/Src/car_ui.c
+@@ -10,7 +10,7 @@
+         static const char *const states[] = {"IDLE", "RUN", "DONE", "OFF", "LOW",
+             "ADC", "GAP", "REV", "FAST", "STALL", "UART", "STOP", "YAW", "BRAKE", "TIMEOUT", "SETTLE", "LOST", "LINE"};
+         const char *title = "TASK 1 A->B";
+-        if (app->route.motion == MOVE_TASK3 || (app->route.motion == MOVE_NONE && app->button.selected_motion == MOVE_TASK3)) title = "TASK 3 AC CB BD DA";
++        if (app->route.motion == MOVE_TASK3 || (app->route.motion == MOVE_NONE && app->button.selected_motion == MOVE_TASK3)) title = "TASK 3 AUTO START";
+         else if (app->route.motion == MOVE_TASK2 || (app->route.motion == MOVE_NONE && app->button.selected_motion == MOVE_TASK2)) title = "TASK 2 ONE LAP";
+         else if (app->route.motion == MOVE_LINE || (app->route.motion == MOVE_NONE && app->button.selected_motion == MOVE_LINE)) title = "TEST HALF ARC";
+         else if (app->route.motion == MOVE_DISTANCE) title = "TEST GO20";
+@@ -28,14 +28,20 @@
+         }
+         if (app->route.motion == MOVE_TASK3 || (app->route.motion == MOVE_NONE && app->button.selected_motion == MOVE_TASK3)) {
+             uint32_t elapsed = app->runtime.state == RUNNING ? (uint32_t)(now - app->route.start_ms) : app->route.elapsed_ms;
+-            (void)snprintf(run, sizeof run, "%s %s T%lu.%lus", states[app->runtime.state], CarTask3_LegName(&app->route.task3),
++            const char *segment = app->route.task3.phase == T3_START_ALIGN ? "TURN A" :
++                (app->route.task3.phase == T3_START_SETTLE ? "WAIT A" : CarTask3_LegName(&app->route.task3));
++            (void)snprintf(run, sizeof run, "%s %s T%lu.%lus", states[app->runtime.state], segment,
+                 (unsigned long)(elapsed / 1000U), (unsigned long)((elapsed / 100U) % 10U));
+         }
+         if (!enabled) {
+             CarLine_Read(app);
+             (void)snprintf(progress, sizeof progress, "LF %u %u %u %u",
+                 (unsigned)app->line.raw[0], (unsigned)app->line.raw[1], (unsigned)app->line.raw[2], (unsigned)app->line.raw[3]);
+-        } else if (app->route.motion == MOVE_TASK3 || (app->route.motion == MOVE_NONE && app->button.selected_motion == MOVE_TASK3))
++        } else if (app->route.motion == MOVE_TASK3 &&
++            (app->route.task3.phase == T3_START_ALIGN || app->route.task3.phase == T3_START_SETTLE))
++            (void)snprintf(progress, sizeof progress, "START Y%d/%d",
++                CarMath_Round(app->heading.angle), CarMath_Round(app->route.task3.start_heading_deg));
++        else if (app->route.motion == MOVE_TASK3 || (app->route.motion == MOVE_NONE && app->button.selected_motion == MOVE_TASK3))
+             (void)snprintf(progress, sizeof progress, "P%u F%u S%d Y%d",
+                 (unsigned)app->route.task3.phase, (unsigned)app->route.task3.fault,
+                 CarMath_Round((app->route.distance_mm[LEFT] + app->route.distance_mm[RIGHT]) * 0.5f - app->route.task3.leg_start_mm),
+--- a/Core/Src/car_route.c
++++ b/Core/Src/car_route.c
+@@ -6,6 +6,7 @@
+ CarTask3Config CarRoute_Task3Config(void)
+ {
+     CarTask3Config c = CarTask3_DefaultConfig();
++    c.start_from_ab = DPT_TASK3_START_FROM_AB;
+     c.span_mm = DPT_TASK3_SPAN_MM; c.radius_mm = DPT_TASK3_RADIUS_MM;
+     c.arc_mm = DPT_TASK3_ARC_MM;
+     c.diagonal_mmps = DPT_TASK3_DIAGONAL_MMPS; c.arc_mmps = DPT_TASK3_ARC_MMPS;
+--- a/tools/tests/test_task3.c
++++ b/tools/tests/test_task3.c
+@@ -37,8 +37,9 @@
+       (t->leg==1U ? fminf(p/t->config.arc_mm,1.0f)*180.0f : 180.0f-fminf(p/t->config.arc_mm,1.0f)*180.0f));
+   if(app()->route.targets[0]>0)dl=dr=610;
+   break;
+- case T3_ALIGN: {
+-  float e=CarMath_WrapDegrees(join_target()-app()->heading.angle);
++ case T3_ALIGN: case T3_START_ALIGN: {
++  float target=t->phase==T3_START_ALIGN?t->start_heading_deg:join_target();
++  float e=CarMath_WrapDegrees(target-app()->heading.angle);
+   float turn=fmaxf(-2.0f,fminf(2.0f,e));app()->heading.angle=CarMath_WrapDegrees(app()->heading.angle+turn);
+   if(app()->route.targets[0]>0)dl=177;
+   if(app()->route.targets[1]>0)dr=176;
+@@ -49,7 +50,7 @@
+  }
+  step(10,dl,dr);
+  assert(a>=0 && b<=0); /* Physical mapping, no backward wheel command. */
+- if(app()->runtime.state==RUNNING && app()->route.task3.phase==T3_ALIGN) {
++ if(app()->runtime.state==RUNNING && (app()->route.task3.phase==T3_ALIGN||app()->route.task3.phase==T3_START_ALIGN)) {
+   if(app()->route.targets[0]==0)assert(app()->wheel.items[0].command==0);
+   if(app()->route.targets[1]==0)assert(app()->wheel.items[1].command==0);
+  }
+@@ -61,18 +62,38 @@
+ }
+ int main(void)
+ {
+- task3_start();uint32_t start=app()->route.start_ms;
++ task3_start();
++ assert(app()->route.task3.phase==T3_START_ALIGN && app()->route.task3.leg==0);
++ assert(fabsf(app()->route.task3.start_heading_deg + 38.65981f)<0.01f);
++ assert(app()->route.targets[0]>0 && app()->route.targets[1]==0 && a==0 && b<0);
++ assert(app()->route.goal>5070 && app()->route.goal<5080);
++ uint32_t start=app()->route.start_ms;
+  cmd("TASK3!");assert(app()->route.start_ms==start);
+  for(unsigned i=0;i<3500&&app()->runtime.state==RUNNING;i++)step_route();
+  assert(app()->runtime.state==DONE && app()->route.task3.phase==T3_DONE && signals==5 && a==0 && b==0);
+  assert(app()->route.elapsed_ms<40000 && app()->route.leg==3U && rp[0]==wp[0] && wp[1]==0);
+  for(unsigned i=0;i<50;i++)step(10,0,0);
+- assert(signals==5 && !app()->signal.active && strcmp(oled_lines[0],"TASK 3 AC CB BD DA")==0);
++ assert(signals==5 && !app()->signal.active && strcmp(oled_lines[0],"TASK 3 AUTO START")==0);
+  assert(strstr(oled_lines[2],"DONE DA T"));for(unsigned i=0;i<4;i++)assert(strlen(oled_lines[i])<=21);
+  /* Busy new button press cancels; held press cannot restart. */
+  task3_start();release_key();press_key();assert(app()->runtime.state==STOPPED && a==0 && b==0 && app()->route.task3.phase==T3_FAULT);
+  for(unsigned i=0;i<200;i++)step(10,0,0);assert(app()->runtime.state==STOPPED);
+  release_key();press_key();assert(app()->runtime.state==RUNNING && app()->route.task3.leg==0);
++ /* Startup waits for both gyro convergence and settled wheels, excluding pivot travel. */
++ task3_start();reach_phase(T3_START_SETTLE);
++ assert(app()->route.leg==0U && app()->route.task3.leg_start_mm==0 && app()->route.distance_mm[0]>0);
++ uint32_t before_ac=app()->route.start_ms;
++ for(unsigned i=0;i<25&&app()->route.task3.phase==T3_START_SETTLE;i++)step_route();
++ assert(app()->route.task3.phase==T3_DIAGONAL && fabsf(progress())<0.01f && app()->route.start_ms==before_ac);
++ /* Initial wrong heading/speed or yaw drift cannot bypass the settle gate. */
++ task3_start();reach_phase(T3_START_SETTLE);app()->heading.angle+=5;step(10,0,0);
++ assert(app()->route.task3.phase==T3_START_ALIGN && app()->runtime.state==RUNNING && a==0 && b==0);
++ task3_start();app()->route.task3.phase_start_mm=-100;step(10,0,0);
++ assert(app()->runtime.state==YAW_BAD && app()->route.task3.fault==T3_TURN);
++ task3_start();for(unsigned i=0;i<410&&app()->runtime.state==RUNNING;i++)step(10,177,0);
++ assert(app()->runtime.state==YAW_BAD && app()->route.task3.fault==T3_TURN && a==0 && b==0);
++ /* Stop dominates the startup gyro turn. */
++ task3_start();queue(0,"STOP!");step(10,0,0);assert(app()->runtime.state==STOPPED && a==0 && b==0);
+  /* Turns bypass the legacy 20deg heading trip, zero wheel clears old integral. */
+  task3_start();reach_phase(T3_ALIGN);app()->wheel.items[0].integral=1700;step(10,0,0);
+  assert(app()->runtime.state==RUNNING && app()->route.targets[0]==0 && app()->wheel.items[0].integral==0 && b==0 && a>0);
+@@ -114,6 +135,6 @@
+  ms=UINT32_MAX-15000U;app()->runtime.old_ms=ms;app()->line.sample_ms=ms;app()->power.sample_ms=ms;
+  enable();press_key();for(unsigned i=0;i<3500&&app()->runtime.state==RUNNING;i++)step_route();
+  assert(app()->runtime.state==DONE && signals==5 && app()->route.elapsed_ms<40000U);
+- puts("PASS: actual CarApp scheduler Task3 GPIO selection/start, AC->CB->BD->DA settled completion, five signals, zero inner PI, no reverse commands, old heading gate isolation, STOP/OFF/RX/MPU/ADC/LOW/FAST/REV/STALL/GAP, line/turn/time guards, restart, telemetry congestion, encoder/millis wrap. Simulation only.");
++ puts("PASS: actual CarApp scheduler Task3 GPIO selection/start, initial AB->AC right gyro turn/settle, AC->CB->BD->DA settled completion, five signals, zero inner PI, no reverse commands, old heading gate isolation, STOP/OFF/RX/MPU/ADC/LOW/FAST/REV/STALL/GAP, line/turn/time guards, restart, telemetry congestion, encoder/millis wrap. Simulation only.");
+  return 0;
+ }

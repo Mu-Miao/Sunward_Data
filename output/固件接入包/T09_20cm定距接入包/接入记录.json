@@ -1,0 +1,18 @@
+{
+  "backup": "/Users/mzh/Desktop/车车/output/固件备份/Sunward_定距接入前备份_2026-10-10_qaedayck",
+  "hardware_downloaded": false,
+  "target_mmps": 60,
+  "distance_mm": 200,
+  "distance_timeout_ms": 10000,
+  "settle_ms": 200,
+  "brake_timeout_ms": 1500,
+  "max_cmd": 1800,
+  "heading_gain_mmps_per_degree": 1,
+  "heading_max_diff_mmps": 15,
+  "source_files_changed": [
+    "Core/Inc/dual_pi_test.h",
+    "Core/Src/dual_pi_test.c"
+  ],
+  "hex_sha256": "6c5eac8ee15f2c3b322d772935c346a4717485b46cc8ad7f64b180d28b5951a6",
+  "build_returncode": 0
+}

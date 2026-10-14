@@ -1,0 +1,188 @@
+{
+  "fields": {
+    "yaw_phase": "app->heading.phase",
+    "yaw_available": "app->heading.available",
+    "cal_requested": "app->heading.cal_requested",
+    "yaw_warm_ms": "app->heading.warm_ms",
+    "yaw_cycles": "app->heading.cycles",
+    "yaw_samples": "app->heading.samples",
+    "yaw_io_us": "app->heading.io_us",
+    "yaw_sum": "app->heading.sum",
+    "yaw_min": "app->heading.min",
+    "yaw_max": "app->heading.max",
+    "yaw_bias": "app->heading.bias",
+    "yaw_angle": "app->heading.angle",
+    "yaw_previous_rate": "app->heading.previous_rate",
+    "yaw_reference": "app->heading.reference",
+    "yaw_error": "app->heading.error",
+    "yaw_diff": "app->heading.diff",
+    "key_action": "app->button.action",
+    "key_raw": "app->button.raw",
+    "key_stable": "app->button.stable",
+    "key_armed": "app->button.armed",
+    "key_press_enabled": "app->button.press_enabled",
+    "key_off_pending": "app->button.off_pending",
+    "key_press_busy": "app->button.press_busy",
+    "key_change_ms": "app->button.change_ms",
+    "key_events": "app->button.events",
+    "key_hold_ms": "app->button.hold_ms",
+    "key_motion": "app->button.selected_motion",
+    "line_raw": "app->line.raw",
+    "line_black": "app->line.black",
+    "line_valid": "app->line.valid",
+    "line_count": "app->line.count",
+    "line_center_seen": "app->line.center_seen",
+    "line_center_ready": "app->line.center_ready",
+    "line_invalid_seen": "app->line.invalid_seen",
+    "line_center_ms": "app->line.center_ms",
+    "line_sample_ms": "app->line.sample_ms",
+    "line_invalid_ms": "app->line.invalid_ms",
+    "line_error": "app->line.error",
+    "line_diff": "app->line.diff",
+    "motion": "app->route.motion",
+    "distance_mm": "app->route.distance_mm",
+    "distance_base": "app->route.base",
+    "distance_goal": "app->route.goal",
+    "distance_cruise": "app->route.cruise",
+    "distance_slow": "app->route.slow",
+    "distance_count": "app->route.distance_count",
+    "distance_tracking": "app->route.tracking",
+    "settle_seen": "app->route.settle_seen",
+    "brake_ms": "app->route.brake_ms",
+    "settle_ms": "app->route.settle_ms",
+    "manual_duration": "app->route.manual_duration",
+    "run_duration": "app->route.run_duration",
+    "switch_ms": "app->route.switch_ms",
+    "start_ms": "app->route.start_ms",
+    "manual_speed": "app->route.manual_speed",
+    "switching": "app->route.switching",
+    "targets": "app->route.targets",
+    "task2_leg": "app->route.leg",
+    "task2_edge_seen": "app->route.edge_seen",
+    "task2_edge_ms": "app->route.edge_ms",
+    "task2_elapsed_ms": "app->route.elapsed_ms",
+    "task2_leg_start": "app->route.leg_start",
+    "task2_start_heading": "app->route.start_heading",
+    "wheels": "app->wheel.items",
+    "inputs": "app->command.inputs",
+    "adc": "app->power.adc",
+    "adc_ok": "app->power.valid",
+    "adc_ms": "app->power.sample_ms",
+    "bat_raw": "app->power.raw",
+    "completion_signal": "app->signal.active",
+    "ready_led_on": "app->signal.ready_led_on",
+    "signal_ms": "app->signal.ms",
+    "oled_render_ms": "app->ui.render_ms",
+    "oled_log_ms": "app->ui.oled_log_ms",
+    "line_log_ms": "app->ui.line_log_ms",
+    "yaw_log_ms": "app->ui.heading_log_ms",
+    "key_log_ms": "app->ui.button_log_ms",
+    "log_ms": "app->ui.motion_log_ms",
+    "state": "app->runtime.state",
+    "active": "app->runtime.active",
+    "primed": "app->runtime.primed",
+    "on_seen": "app->runtime.on_seen",
+    "bluetooth_on": "app->runtime.bluetooth_on",
+    "hz": "app->runtime.hz",
+    "old_cycles": "app->runtime.old_cycles",
+    "old_tick": "app->runtime.old_tick",
+    "old_ms": "app->runtime.old_ms",
+    "on_ms": "app->runtime.on_ms",
+    "dt_us": "app->runtime.dt_us",
+    "fault_wheel": "app->runtime.fault_wheel",
+    "drive": "app->runtime.drive"
+  },
+  "functions": {
+    "clear_controllers": [
+      "car_wheel",
+      "CarWheel_Clear"
+    ],
+    "control_wheel": [
+      "car_wheel",
+      "CarWheel_Control"
+    ],
+    "stop": [
+      "car_app",
+      "CarApp_Stop"
+    ],
+    "key_poll": [
+      "car_button",
+      "CarButton_Poll"
+    ],
+    "select_key_motion": [
+      "car_route",
+      "CarRoute_Select"
+    ],
+    "request_motion": [
+      "car_route",
+      "CarRoute_Request"
+    ],
+    "DualPITest_EnableHeading": [
+      "car_heading",
+      "CarHeading_Enable"
+    ],
+    "begin_yaw_calibration": [
+      "car_heading",
+      "CarHeading_BeginCalibration"
+    ],
+    "sample_yaw": [
+      "car_heading",
+      "CarHeading_Sample"
+    ],
+    "read_line": [
+      "car_line",
+      "CarLine_Read"
+    ],
+    "line_decode": [
+      "car_line",
+      "CarLine_Decode"
+    ],
+    "line_sample": [
+      "car_line",
+      "CarLine_Sample"
+    ],
+    "line_targets": [
+      "car_line",
+      "CarLine_SetTargets"
+    ],
+    "task2_update": [
+      "car_route",
+      "CarRoute_UpdateTask2"
+    ],
+    "accept_command": [
+      "car_command",
+      "CarCommand_Accept"
+    ],
+    "signal_set": [
+      "car_signal",
+      "CarSignal_Set"
+    ],
+    "key_indicator": [
+      "car_signal",
+      "CarSignal_UpdateReady"
+    ],
+    "update_oled": [
+      "car_ui",
+      "CarUI_UpdateOLED"
+    ],
+    "task2_arc": [
+      "car_route",
+      "CarRoute_IsArc"
+    ],
+    "uses_line": [
+      "car_route",
+      "CarRoute_UsesLine"
+    ],
+    "uses_heading": [
+      "car_route",
+      "CarRoute_UsesHeading"
+    ]
+  },
+  "pure": {
+    "is_distance": "CarRoute_IsDistance",
+    "delta16": "CarMath_Delta16",
+    "rounded": "CarMath_Round",
+    "wrap_degrees": "CarMath_WrapDegrees",
+    "unsigned_value": "unsigned_value"
+  }
+}

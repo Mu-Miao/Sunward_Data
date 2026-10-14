@@ -1,0 +1,26 @@
+[
+  {
+    "file": "01_lower_base",
+    "dimensions_mm": [
+      110.0,
+      130.0,
+      42.0
+    ],
+    "bottom_z": 0.0,
+    "volume_mm3": 83827.868,
+    "solid_count": 1,
+    "mesh_closed": true
+  },
+  {
+    "file": "02_upper_controller_deck",
+    "dimensions_mm": [
+      82.0,
+      128.0,
+      22.4
+    ],
+    "bottom_z": 0.0,
+    "volume_mm3": 70742.08,
+    "solid_count": 1,
+    "mesh_closed": true
+  }
+]

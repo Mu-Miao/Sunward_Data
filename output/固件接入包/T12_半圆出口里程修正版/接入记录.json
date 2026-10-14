@@ -1,0 +1,69 @@
+{
+  "backup": "/Users/mzh/Desktop/车车/output/固件备份/Sunward_出口里程修正前备份_2026-10-11_bck1ykba",
+  "source_files_changed": [
+    "Core/Inc/dual_pi_test.h"
+  ],
+  "hardware_downloaded": false,
+  "physical_line_test_done": false,
+  "physical_task2_test_done": false,
+  "user_reported_prior_half_circle": "runs half-circle and automatically stops",
+  "field_radius_user_reported_mm": 600,
+  "field_radius_currently_verified": false,
+  "observed_failure": {
+    "state": "LOST BC",
+    "elapsed_s": 13.4,
+    "segment_encoder_mm": 1256
+  },
+  "task2_arc_calibrated_encoder_mm": 1256,
+  "previous_task2_arc_encoder_mm": "600*pi=1885; exitwindow1685..2085 rejects observed1256",
+  "geometric_radius_if_encoder_correct_mm": 400,
+  "radius400_is_inference_not_new_user_measurement": true,
+  "half_circle_tuned_parameters_preserved": {
+    "length_mm": "400*pi; concurrent user edit retained",
+    "cruise_mmps": 200,
+    "start_mmps": 50,
+    "gain": 64,
+    "max_diff": 80,
+    "timeout_ms": 45000
+  },
+  "task2": "AB straight1000 -> BC calibrated arc1256 -> CD straight1000 -> DA calibrated arc1256; signal at B/C/D, final settled A stop/signal",
+  "second_arc_same_length_assumption_requires_field_confirmation": true,
+  "task2_straight_mmps": 200,
+  "task2_development_timeout_ms": 45000,
+  "acceptance_required_time_ms": 30000,
+  "physical_30s_acceptance_verified": false,
+  "transitions": "30ms stable edge, nominal distance +/-200mm, arc exits additionally expected heading +/-20deg; mid-arc loss immediate zero and 100ms latch",
+  "polarity": "black=0 / white=1; user rechecked white1111 centre1001",
+  "physical_left_to_right": [
+    "O4",
+    "O3",
+    "O2",
+    "O1"
+  ],
+  "motion": "task2 one lap; standalone tuned half-circle retained; original GO100 retained",
+  "selection": "OFF idle hold1500ms cycles task1 / half arc / task2 once; OFF short release=CAL; READY+ON new press=start; busy press=STOP; reboot defaults task1",
+  "bluetooth_required_for_operation": false,
+  "off_short_action": "stable release distinguishes tap from hold; hold release never CAL",
+  "line_heading": "MPU health monitored; straight heading hold/20deg guard not applied to line turning",
+  "invalid_line": "zero motor command immediately on sample; continuous100ms becomes LOST/LINE fault",
+  "unchanged_files_checked": [
+    "Core/Src/dual_pi_test.c",
+    "Core/Src/task_oled.c",
+    "Core/Inc/task_oled.h",
+    "Core/Src/main.c",
+    "Core/Src/gpio.c",
+    "Core/Src/mpu6050.c",
+    "Core/Src/soft_i2c.c",
+    "Core/Src/lab_uart_async.c",
+    "Sunward.ioc",
+    ".eide/eide.yml",
+    "build/Debug/builder.params"
+  ],
+  "build_returncode": 0,
+  "hex_sha256": "0828a816bebb763748441aaa06e6b8968b11efb450d39d6b5e267cce6e126730",
+  "concurrent_user_edit": "User changed independent half DPT_LINE_MM from600*pi to400*pi after initial repair compile; final rebuild did not write project source.",
+  "user_radius_report_and_encoder_disagreement": "Earlier reported60cm; later source changed to400*pi and observedBC exit1256; no new ruler radius measurement.",
+  "final_build_returncode": 0,
+  "user_build_after_edit_saved": "/Users/mzh/Desktop/车车/output/固件备份/Sunward_出口里程修正前备份_2026-10-11_bck1ykba/user_build_after_half_length_edit",
+  "old_baseline_header_in_backup": "/Users/mzh/Desktop/车车/output/固件备份/Sunward_出口里程修正前备份_2026-10-11_bck1ykba/original/Core/Inc/dual_pi_test.h"
+}

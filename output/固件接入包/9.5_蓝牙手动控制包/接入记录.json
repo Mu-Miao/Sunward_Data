@@ -1,0 +1,11 @@
+{
+  "backup": "/Users/mzh/Desktop/车车/output/固件备份/Sunward_手动控制前备份_2026-10-08_a9br3vgr",
+  "build_returncode": 0,
+  "hardware_downloaded": false,
+  "usb_baud": 115200,
+  "bluetooth_baud": 9600,
+  "manual_mmps": 120,
+  "manual_seconds": 10,
+  "manual_max_cmd": 3000,
+  "hex_sha256": "035a801296f2f64bdf54d50f42cffac1fd544950a6adfdd1f1e341f49918c3af"
+}

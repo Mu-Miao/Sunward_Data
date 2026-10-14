@@ -1,0 +1,384 @@
+--- a/Core/Src/dual_pi_test.c
++++ b/Core/Src/dual_pi_test.c
+@@ -8,7 +8,7 @@
+ typedef enum { IDLE, RUNNING, DONE, OFF, LOW, ADC_BAD, GAP,
+                REVERSE, FAST, STALL, UART_BAD, STOPPED, YAW_BAD, BRAKING, TIMEOUT, SETTLE_BAD, LINE_LOST, LINE_BAD } TestState;
+ enum { LEFT = 0, RIGHT = 1 };
+-typedef enum { MOVE_NONE, MOVE_TEST, MOVE_FORWARD, MOVE_BACK, MOVE_LEFT, MOVE_RIGHT, MOVE_HEADING, MOVE_DISTANCE, MOVE_ROUTE, MOVE_LINE } Motion;
++typedef enum { MOVE_NONE, MOVE_TEST, MOVE_FORWARD, MOVE_BACK, MOVE_LEFT, MOVE_RIGHT, MOVE_HEADING, MOVE_DISTANCE, MOVE_ROUTE, MOVE_LINE, MOVE_TASK2 } Motion;
+ typedef enum { Y_NONE, Y_WARM, Y_CAL, Y_READY, Y_FAIL } YawPhase;
+ static YawPhase yaw_phase;
+ static uint8_t yaw_available, cal_requested;
+@@ -32,6 +32,13 @@
+ static uint32_t line_center_ms, line_sample_ms, line_invalid_ms;
+ static float line_error, line_diff;
+ static Motion key_motion;
++static uint8_t task2_leg, task2_edge_seen;
++static uint32_t task2_edge_ms, task2_elapsed_ms;
++static float task2_leg_start, task2_start_heading;
++static void task2_update(uint32_t now);
++static int task2_arc(void) { return motion == MOVE_TASK2 && (task2_leg & 1U); }
++static int uses_line(void) { return motion == MOVE_LINE || task2_arc(); }
++static int uses_heading(void) { return motion != MOVE_LINE && !task2_arc(); }
+ static void read_line(void);
+ static void line_decode(void);
+ static void line_sample(uint32_t now, int timing_ok);
+@@ -70,7 +77,7 @@
+ static uint32_t adc_ms, log_ms, on_ms, bat_raw, dt_us;
+ static char fault_wheel;
+ static const char banner[] =
+-    "DPI KEY_U OFF:short=CAL,long1.5s=mode; READY+ON:press=start; busy:press=STOP; LF20!/GO100!/GO20!/GO!/RUN!/F!/B!/L!/R!/STOP!/CAL! V/TIME\r\n";
++    "DPI KEY_U OFF:short=CAL,long1.5s=mode; READY+ON:press=start; busy:press=STOP; TASK2!/LF20!/GO100!/GO20!/GO!/RUN!/F!/B!/L!/R!/STOP!/CAL! V/TIME\r\n";
+ 
+ static void clear_controllers(void)
+ {
+@@ -83,7 +90,7 @@
+ 
+ static int is_distance(Motion m)
+ {
+-    return m == MOVE_DISTANCE || m == MOVE_ROUTE || m == MOVE_LINE;
++    return m == MOVE_DISTANCE || m == MOVE_ROUTE || m == MOVE_LINE || m == MOVE_TASK2;
+ }
+ 
+ /* PC2/PC3 active low, PA15 active high; foreground only, no HAL_Delay. */
+@@ -97,7 +104,7 @@
+ 
+ static void stop(TestState why, char faulty)
+ {
+-    uint8_t completed_route = why == DONE && state == BRAKING && (motion == MOVE_ROUTE || motion == MOVE_LINE);
++    uint8_t completed_route = why == DONE && state == BRAKING && (motion == MOVE_ROUTE || motion == MOVE_LINE || motion == MOVE_TASK2);
+     drive(0, 0);
+     clear_controllers();
+     signal_set(0);
+@@ -108,6 +115,8 @@
+         brake_ms = HAL_GetTick();
+         settle_seen = 0;
+     }
++    if (motion == MOVE_TASK2 && (state == RUNNING || state == BRAKING))
++        task2_elapsed_ms = (uint32_t)(HAL_GetTick() - start_ms);
+     state = why;
+     fault_wheel = faulty;
+     if (completed_route) {
+@@ -168,10 +177,14 @@
+     clear_controllers();
+     signal_set(0);
+     key_motion = selected;
++    task2_leg = task2_edge_seen = 0U;
++    task2_leg_start = 0.0f;
++    task2_elapsed_ms = 0U;
+     motion = MOVE_NONE;
+     distance_tracking = 0U;
+     distance_mm[LEFT] = distance_mm[RIGHT] = 0.0f;
+-    distance_goal = key_motion == MOVE_LINE ? DPT_LINE_MM : DPT_ROUTE_MM;
++    distance_goal = key_motion == MOVE_LINE ? DPT_LINE_MM :
++        (key_motion == MOVE_TASK2 ? 2.0f * (DPT_TASK2_STRAIGHT_MM + DPT_TASK2_ARC_MM) : DPT_ROUTE_MM);
+     line_center_seen = line_center_ready = line_invalid_seen = 0U;
+     line_diff = 0.0f;
+     key_log_ms = now - 1000U;
+@@ -323,16 +336,22 @@
+                 distance_count[i] = (uint16_t)__HAL_TIM_GET_COUNTER(wheels[i].encoder);
+                 distance_mm[i] = 0.0f;
+             }
+-            distance_goal = requested == MOVE_ROUTE ? DPT_ROUTE_MM : (requested == MOVE_LINE ? DPT_LINE_MM : DPT_DISTANCE_MM);
+-            distance_cruise = requested == MOVE_ROUTE ? DPT_ROUTE_CRUISE_MMPS : (requested == MOVE_LINE ? DPT_LINE_CRUISE_MMPS : DPT_TARGET_MMPS);
++            if (requested == MOVE_TASK2) {
++                task2_leg = task2_edge_seen = 0U;
++                task2_leg_start = 0.0f;
++                task2_start_heading = yaw_reference;
++                task2_elapsed_ms = 0U;
++            }
++            distance_goal = requested == MOVE_TASK2 ? 2.0f * (DPT_TASK2_STRAIGHT_MM + DPT_TASK2_ARC_MM) : requested == MOVE_ROUTE ? DPT_ROUTE_MM : (requested == MOVE_LINE ? DPT_LINE_MM : DPT_DISTANCE_MM);
++            distance_cruise = requested == MOVE_TASK2 ? DPT_TASK2_STRAIGHT_MMPS : requested == MOVE_ROUTE ? DPT_ROUTE_CRUISE_MMPS : (requested == MOVE_LINE ? DPT_LINE_CRUISE_MMPS : DPT_TARGET_MMPS);
+             distance_slow = requested == MOVE_ROUTE ? DPT_ROUTE_SLOW_MM : DPT_DISTANCE_SLOW_MM;
+-            distance_base = requested == MOVE_ROUTE ? DPT_ROUTE_START_MMPS : (requested == MOVE_LINE ? DPT_LINE_START_MMPS : DPT_TARGET_MMPS);
++            distance_base = requested == MOVE_TASK2 ? DPT_ROUTE_START_MMPS : requested == MOVE_ROUTE ? DPT_ROUTE_START_MMPS : (requested == MOVE_LINE ? DPT_LINE_START_MMPS : DPT_TARGET_MMPS);
+             line_invalid_seen = 0U;
+             line_diff = 0.0f;
+             targets[LEFT] = targets[RIGHT] = distance_base;
+             distance_tracking = 1;
+             settle_seen = 0;
+-            run_duration = requested == MOVE_ROUTE ? DPT_ROUTE_TIMEOUT_MS :
++            run_duration = requested == MOVE_TASK2 ? DPT_TASK2_TIMEOUT_MS : requested == MOVE_ROUTE ? DPT_ROUTE_TIMEOUT_MS :
+                 (requested == MOVE_LINE ? DPT_LINE_TIMEOUT_MS : DPT_DISTANCE_TIMEOUT_MS);
+         }
+         start_ms = switch_ms = now;
+@@ -363,6 +382,7 @@
+             *stop_requested = 1;
+         }
+         if (strcmp(in->text, "CAL") == 0 && state != RUNNING) cal_requested = 1;
++        if (strcmp(in->text, "TASK2") == 0) *requested = MOVE_TASK2;
+         if (strcmp(in->text, "LF20") == 0) *requested = MOVE_LINE;
+         if (strcmp(in->text, "GO20") == 0) *requested = MOVE_DISTANCE;
+         if (strcmp(in->text, "GO100") == 0) *requested = MOVE_ROUTE;
+@@ -413,6 +433,13 @@
+         DPT_LINE_GAIN <= 0.0f || DPT_LINE_MAX_DIFF <= 0.0f ||
+         DPT_LINE_MAX_DIFF > DPT_LINE_CRUISE_MMPS * 0.5f ||
+         DPT_LINE_TIMEOUT_MS < 1000U || DPT_LINE_TIMEOUT_MS > 60000U ||
++        DPT_TASK2_STRAIGHT_MM != 1000.0f || DPT_TASK2_ARC_MM < 500.0f || DPT_TASK2_ARC_MM > 2500.0f ||
++        DPT_TASK2_STRAIGHT_MMPS < 40.0f || DPT_TASK2_STRAIGHT_MMPS > 250.0f ||
++        DPT_TASK2_TIMEOUT_MS < 1000U || DPT_TASK2_TIMEOUT_MS > 60000U ||
++        DPT_TASK2_ENTRY_WINDOW_MM < 50.0f || DPT_TASK2_ENTRY_WINDOW_MM > 250.0f ||
++        DPT_TASK2_EXIT_WINDOW_MM < 50.0f || DPT_TASK2_EXIT_WINDOW_MM > 250.0f ||
++        DPT_TASK2_EDGE_MS < 30U || DPT_TASK2_EDGE_MS > 100U ||
++        DPT_TASK2_END_ANGLE_DEG <= 0.0f || DPT_TASK2_END_ANGLE_DEG > 20.0f ||
+         DPT_LINE_CENTER_MS < 100U || DPT_LINE_INVALID_MS < 50U || DPT_LINE_INVALID_MS > 100U ||
+         DPT_CIRC_M <= 0.0f || DPT_DISTANCE_MM <= 0.0f ||
+         DPT_DISTANCE_SLOW_MM <= 0.0f || DPT_DISTANCE_SLOW_MM >= DPT_DISTANCE_MM ||
+@@ -473,6 +500,9 @@
+     oled_log_ms = line_log_ms = now;
+     memset(line_raw, 0, sizeof line_raw);
+     memset(line_black, 0, sizeof line_black);
++    task2_leg = task2_edge_seen = 0U;
++    task2_leg_start = task2_start_heading = 0.0f;
++    task2_elapsed_ms = 0U;
+     key_motion = MOVE_ROUTE; /* Boot remains the accepted independent 1m task. */
+     line_valid = line_count = line_center_seen = line_center_ready = line_invalid_seen = 0U;
+     line_center_ms = line_sample_ms = line_invalid_ms = now;
+@@ -564,7 +594,7 @@
+ 
+ static void line_sample(uint32_t now, int timing_ok)
+ {
+-    if (key_motion != MOVE_LINE && motion != MOVE_LINE) return;
++    if (key_motion != MOVE_LINE && motion != MOVE_LINE && key_motion != MOVE_TASK2 && motion != MOVE_TASK2) return;
+     if (!timing_ok) { line_center_seen = line_center_ready = 0U; return; }
+     line_decode();
+     line_sample_ms = now;
+@@ -597,6 +627,53 @@
+     targets[RIGHT] = base - line_diff;
+ }
+ 
++/* Expected mileage plus a stable edge gates every transition.
++   Mid-arc loss still brakes immediately; white straights use heading control. */
++static void task2_update(uint32_t now)
++{
++    if (motion != MOVE_TASK2 || state != RUNNING) return;
++    float travelled = (distance_mm[LEFT] + distance_mm[RIGHT]) * 0.5f;
++    float progress = travelled - task2_leg_start;
++    int arc = task2_arc();
++    float length = arc ? DPT_TASK2_ARC_MM : DPT_TASK2_STRAIGHT_MM;
++    float window = arc ? DPT_TASK2_EXIT_WINDOW_MM : DPT_TASK2_ENTRY_WINDOW_MM;
++    int expected_edge;
++    if (!arc) expected_edge = line_valid;
++    else {
++        float end_heading = task2_leg == 1U ? wrap_degrees(task2_start_heading + 180.0f) : task2_start_heading;
++        float error = wrap_degrees(end_heading - yaw_angle);
++        expected_edge = line_count == 0U && error >= -DPT_TASK2_END_ANGLE_DEG && error <= DPT_TASK2_END_ANGLE_DEG;
++    }
++    if (progress >= length - window && progress <= length + window && expected_edge) {
++        if (!task2_edge_seen) { task2_edge_seen = 1U; task2_edge_ms = now; }
++        if (arc) {
++            drive(0, 0); /* Exit-white debounce is stationary, never an open-loop search. */
++            clear_controllers();
++            targets[LEFT] = targets[RIGHT] = 0.0f;
++        }
++        if ((uint32_t)(now - task2_edge_ms) >= DPT_TASK2_EDGE_MS) {
++            task2_edge_seen = line_invalid_seen = 0U;
++            if (task2_leg == 3U) { stop(BRAKING, '-'); return; }
++            ++task2_leg;
++            task2_leg_start = travelled;
++            clear_controllers();
++            signal_ms = now;
++            signal_set(1); /* B, C, D; signalling does not pause the route. */
++            distance_cruise = task2_arc() ? DPT_LINE_CRUISE_MMPS : DPT_TASK2_STRAIGHT_MMPS;
++            if (!task2_arc()) {
++                yaw_reference = wrap_degrees(task2_start_heading + 180.0f);
++                yaw_error = wrap_degrees(yaw_reference - yaw_angle);
++                yaw_diff = DPT_HEADING_GAIN * yaw_error;
++                if (yaw_diff > DPT_HEADING_MAX_DIFF) yaw_diff = DPT_HEADING_MAX_DIFF;
++                if (yaw_diff < -DPT_HEADING_MAX_DIFF) yaw_diff = -DPT_HEADING_MAX_DIFF;
++            }
++            return;
++        }
++    } else task2_edge_seen = 0U;
++    if (progress > length + window)
++        stop(arc ? LINE_BAD : LINE_LOST, '-');
++}
++
+ /* Low-rate text snapshots; SPI is sent in bounded chunks after control. */
+ static void update_oled(uint32_t now, int enabled)
+ {
+@@ -605,7 +682,8 @@
+         static const char *const states[] = {"IDLE", "RUN", "DONE", "OFF", "LOW",
+             "ADC", "GAP", "REV", "FAST", "STALL", "UART", "STOP", "YAW", "BRAKE", "TIMEOUT", "SETTLE", "LOST", "LINE"};
+         const char *title = "TASK 1 A->B";
+-        if (motion == MOVE_LINE || (motion == MOVE_NONE && key_motion == MOVE_LINE)) title = "TEST LF20";
++        if (motion == MOVE_TASK2 || (motion == MOVE_NONE && key_motion == MOVE_TASK2)) title = "TASK 2 ONE LAP";
++        else if (motion == MOVE_LINE || (motion == MOVE_NONE && key_motion == MOVE_LINE)) title = "TEST HALF ARC";
+         else if (motion == MOVE_DISTANCE) title = "TEST GO20";
+         else if (motion == MOVE_HEADING) title = "TEST GO";
+         else if (motion == MOVE_TEST) title = "TEST RUN";
+@@ -613,14 +691,24 @@
+         char cal[24], run[24], progress[32];
+         (void)snprintf(cal, sizeof cal, "YC %s EN %s", phases[yaw_phase], enabled ? "ON" : "OFF");
+         (void)snprintf(run, sizeof run, "STATE %s", states[state]);
++        if (motion == MOVE_TASK2 || (motion == MOVE_NONE && key_motion == MOVE_TASK2)) {
++            static const char *const legs[] = {"AB", "BC", "CD", "DA"};
++            uint32_t elapsed = state == RUNNING || state == BRAKING ? (uint32_t)(now - start_ms) : task2_elapsed_ms;
++            (void)snprintf(run, sizeof run, "%s %s T%lu.%lus", states[state], legs[task2_leg],
++                (unsigned long)(elapsed / 1000U), (unsigned long)((elapsed / 100U) % 10U));
++        }
+         if (!enabled) {
+             read_line();
+             (void)snprintf(progress, sizeof progress, "LF %u %u %u %u",
+                 (unsigned)line_raw[0], (unsigned)line_raw[1], (unsigned)line_raw[2], (unsigned)line_raw[3]);
+-        } else if (motion == MOVE_LINE || (motion == MOVE_NONE && key_motion == MOVE_LINE))
+-            (void)snprintf(progress, sizeof progress, "LF%u%u%u%u S%d/200",
++        } else if (motion == MOVE_TASK2 || (motion == MOVE_NONE && key_motion == MOVE_TASK2))
++            (void)snprintf(progress, sizeof progress, "LF%u%u%u%u S%d",
+                 (unsigned)line_raw[0], (unsigned)line_raw[1], (unsigned)line_raw[2], (unsigned)line_raw[3],
+-                rounded((distance_mm[LEFT] + distance_mm[RIGHT]) * 0.5f));
++                rounded((distance_mm[LEFT] + distance_mm[RIGHT]) * 0.5f - task2_leg_start));
++        else if (motion == MOVE_LINE || (motion == MOVE_NONE && key_motion == MOVE_LINE))
++            (void)snprintf(progress, sizeof progress, "LF%u%u%u%u S%d/%d",
++                (unsigned)line_raw[0], (unsigned)line_raw[1], (unsigned)line_raw[2], (unsigned)line_raw[3],
++                rounded((distance_mm[LEFT] + distance_mm[RIGHT]) * 0.5f), rounded(DPT_LINE_MM));
+         else if (is_distance(motion))
+             (void)snprintf(progress, sizeof progress, "S %d/%dmm",
+                 rounded((distance_mm[LEFT] + distance_mm[RIGHT]) * 0.5f), rounded(distance_goal));
+@@ -641,13 +729,14 @@
+             if (bluetooth_on) (void)LabUART_TryWritePort(LAB_UART_BT, msg, (uint16_t)n);
+         }
+     }
+-    if ((!enabled || key_motion == MOVE_LINE || motion == MOVE_LINE) && (uint32_t)(now - line_log_ms) >= 1000U) {
++    if ((!enabled || key_motion == MOVE_LINE || motion == MOVE_LINE || key_motion == MOVE_TASK2 || motion == MOVE_TASK2) && (uint32_t)(now - line_log_ms) >= 1000U) {
+         char msg[128];
+         int n;
+-        if (key_motion == MOVE_LINE || motion == MOVE_LINE)
+-            n = snprintf(msg, sizeof msg, "LINE RAW=%u%u%u%u E100=%d C=%d VALID=%u CENTER=%u MODE=LF20\r\n",
++        if (key_motion == MOVE_LINE || motion == MOVE_LINE || key_motion == MOVE_TASK2 || motion == MOVE_TASK2)
++            n = snprintf(msg, sizeof msg, "LINE RAW=%u%u%u%u E100=%d C=%d VALID=%u CENTER=%u MODE=%s SEG=%u\r\n",
+                 (unsigned)line_raw[0], (unsigned)line_raw[1], (unsigned)line_raw[2], (unsigned)line_raw[3],
+-                rounded(line_error * 100.0f), rounded(line_diff), (unsigned)line_valid, (unsigned)line_center_ready);
++                rounded(line_error * 100.0f), rounded(line_diff), (unsigned)line_valid, (unsigned)line_center_ready,
++                motion == MOVE_TASK2 || key_motion == MOVE_TASK2 ? "TASK2" : "HALF", (unsigned)task2_leg);
+         else n = snprintf(msg, sizeof msg, "LINE O1=%u O2=%u O3=%u O4=%u\r\n",
+             (unsigned)line_raw[0], (unsigned)line_raw[1], (unsigned)line_raw[2], (unsigned)line_raw[3]);
+         line_log_ms = now;
+@@ -723,7 +812,7 @@
+     /* OFF selection is separate from starting. No pending movement is kept.
+        Serial STOP/RX errors or a busy press cannot select or queue a restart. */
+     if (!enabled && !was_busy && !stop_requested &&
+-        (requested == MOVE_LINE || requested == MOVE_ROUTE)) {
++        (requested == MOVE_LINE || requested == MOVE_ROUTE || requested == MOVE_TASK2)) {
+         select_key_motion(requested, now);
+         requested = MOVE_NONE;
+     }
+@@ -737,7 +826,7 @@
+                 stop_requested = 1;
+                 key_action = KEY_STOP;
+             } else if (key_pressed == KEY_EVENT_HOLD && !enabled && !cal_requested) {
+-                select_key_motion(key_motion == MOVE_ROUTE ? MOVE_LINE : MOVE_ROUTE, now);
++                select_key_motion(key_motion == MOVE_ROUTE ? MOVE_LINE : (key_motion == MOVE_LINE ? MOVE_TASK2 : MOVE_ROUTE), now);
+                 requested = MOVE_NONE;
+                 key_action = KEY_MODE;
+             } else if (key_pressed == KEY_EVENT_SHORT && !enabled && yaw_available) {
+@@ -788,7 +877,7 @@
+                     stop(OFF, '-');
+                 if ((state == RUNNING || state == BRAKING) &&
+                     (motion == MOVE_HEADING || is_distance(motion)) &&
+-                    (yaw_phase != Y_READY || (motion != MOVE_LINE && (yaw_error > DPT_HEADING_MAX_ERROR || yaw_error < -DPT_HEADING_MAX_ERROR))))
++                    (yaw_phase != Y_READY || (uses_heading() && (yaw_error > DPT_HEADING_MAX_ERROR || yaw_error < -DPT_HEADING_MAX_ERROR))))
+                     stop(YAW_BAD, '-');
+                 /* Accumulate signed wheel travel only from the fresh start snapshot.
+                    Reject timing/implausible counts before declaring distance completion. */
+@@ -803,7 +892,8 @@
+                                 * DPT_CIRC_M * 1000.0f / cpr[i];
+                             distance_count[i] = count[i];
+                         }
+-                        if (state == RUNNING && (motion != MOVE_LINE || line_valid) && (distance_mm[LEFT] + distance_mm[RIGHT]) * 0.5f >= distance_goal)
++                        if (motion == MOVE_TASK2) task2_update(now);
++                        if (motion != MOVE_TASK2 && state == RUNNING && (!uses_line() || line_valid) && (distance_mm[LEFT] + distance_mm[RIGHT]) * 0.5f >= distance_goal)
+                             stop(BRAKING, '-');
+                         if (state == BRAKING) {
+                             if (wheels[LEFT].velocity >= -5.0f && wheels[LEFT].velocity <= 5.0f &&
+@@ -815,18 +905,18 @@
+                     }
+                 }
+                 if (state == RUNNING && (motion == MOVE_HEADING || is_distance(motion))) {
+-                    if (yaw_phase != Y_READY || (motion != MOVE_LINE && (yaw_error > DPT_HEADING_MAX_ERROR || yaw_error < -DPT_HEADING_MAX_ERROR)))
++                    if (yaw_phase != Y_READY || (uses_heading() && (yaw_error > DPT_HEADING_MAX_ERROR || yaw_error < -DPT_HEADING_MAX_ERROR)))
+                         stop(YAW_BAD, '-');
+                     else {
+                         float base = DPT_TARGET_MMPS;
+                         if (is_distance(motion)) {
+                             base = distance_cruise;
+-                            float remaining = distance_goal - (distance_mm[LEFT] + distance_mm[RIGHT]) * 0.5f;
++                            float remaining = motion == MOVE_TASK2 ? DPT_DISTANCE_SLOW_MM : distance_goal - (distance_mm[LEFT] + distance_mm[RIGHT]) * 0.5f;
+                             if (remaining < distance_slow) {
+                                 base = distance_cruise * remaining / distance_slow;
+                                 if (base < DPT_DISTANCE_MIN_MMPS) base = DPT_DISTANCE_MIN_MMPS;
+                             }
+-                            if (motion == MOVE_ROUTE || motion == MOVE_LINE) {
++                            if (motion == MOVE_ROUTE || motion == MOVE_LINE || motion == MOVE_TASK2) {
+                                 float ramp = (motion == MOVE_LINE ? DPT_LINE_START_MMPS : DPT_ROUTE_START_MMPS) + DPT_ROUTE_ACCEL_MMPS2 * ((float)(uint32_t)(now - start_ms) / 1000.0f);
+                                 if (base > ramp) base = ramp;
+                             }
+@@ -835,7 +925,11 @@
+                             if (yaw_diff > max_diff) yaw_diff = max_diff;
+                             if (yaw_diff < -max_diff) yaw_diff = -max_diff;
+                         }
+-                        if (motion == MOVE_LINE) line_targets(now, base);
++                        if (uses_line()) {
++                            if (motion == MOVE_TASK2 && task2_edge_seen && line_count == 0U) {
++                                targets[LEFT] = targets[RIGHT] = 0.0f;
++                            } else line_targets(now, base);
++                        }
+                         else {
+                             targets[LEFT] = base - yaw_diff;
+                             targets[RIGHT] = base + yaw_diff;
+@@ -845,7 +939,7 @@
+                 if (state == RUNNING) {
+                     if (tick10_count - old_tick != 1U || dt_us < 5000U || dt_us > 15000U)
+                         stop(GAP, '-');
+-                    else if (!switching && (motion != MOVE_LINE || line_valid)) {
++                    else if (!switching && (!uses_line() || line_valid)) {
+                         for (unsigned i = 0; i < 2U && state == RUNNING; ++i)
+                             control_wheel(i, seconds);
+                         /* Commit both commands only if both wheels passed their checks. */
+@@ -861,8 +955,8 @@
+     if ((uint32_t)(now - log_ms) >= (is_distance(motion) ? 400U : 200U)) {
+         static const char *const names[] = {"IDLE", "RUN", "DONE", "OFF", "LOW",
+             "ADC", "GAP", "REV", "FAST", "STALL", "UART", "STOP", "YAW", "BRAKE", "TIMEOUT", "SETTLE", "LOST", "LINE"};
+-        static const char *const modes[] = {"-", "TEST", "FWD", "BACK", "LEFT", "RIGHT", "HEAD", "DIST", "DIST", "LINE"};
+-        char msg[224];
++        static const char *const modes[] = {"-", "TEST", "FWD", "BACK", "LEFT", "RIGHT", "HEAD", "DIST", "DIST", "LINE", "TASK2"};
++        char msg[256];
+         int n = snprintf(msg, sizeof msg,
+             "DPI T=%d L=%d R=%d UL=%d UR=%d IL=%d IR=%d BAT=%lu DT=%lu ST=%s F=%c RXE=%lu TXD=%lu M=%s TL=%d TR=%d V=%u SEC=%lu\r\n",
+             state == RUNNING ? (is_distance(motion) ? rounded(distance_base) : ((motion == MOVE_TEST || motion == MOVE_HEADING || is_distance(motion)) ? rounded(DPT_TARGET_MMPS) : (int)manual_speed)) : 0,
+@@ -884,7 +978,7 @@
+             if (added <= 0 || added >= (int)(sizeof msg - (size_t)n)) n = (int)sizeof msg;
+             else n += added;
+         }
+-        if ((motion == MOVE_ROUTE || motion == MOVE_LINE) && n > 1 && n < (int)sizeof msg) {
++        if ((motion == MOVE_ROUTE || motion == MOVE_LINE || motion == MOVE_TASK2) && n > 1 && n < (int)sizeof msg) {
+             n -= 2;
+             int added = snprintf(msg + n, sizeof msg - (size_t)n, " SIG=%u\r\n", (unsigned)completion_signal);
+             if (added <= 0 || added >= (int)(sizeof msg - (size_t)n)) n = (int)sizeof msg;
+@@ -919,7 +1013,7 @@
+         char msg[96];
+         int n = snprintf(msg, sizeof msg, "KEY EN=%u RAW=%u ARM=%u EVT=%lu ACT=%s %s\r\n",
+             (unsigned)enabled, (unsigned)key_raw, (unsigned)key_armed,
+-            (unsigned long)key_events, actions[key_action], key_motion == MOVE_LINE ? "TEST=LF20" : "TASK=1");
++            (unsigned long)key_events, actions[key_action], key_motion == MOVE_TASK2 ? "TASK=2" : (key_motion == MOVE_LINE ? "TEST=HALF" : "TASK=1"));
+         key_log_ms = now;
+         if (n > 0 && n < (int)sizeof msg) {
+             (void)LabUART_TryWrite(msg, (uint16_t)n);
+--- a/Core/Inc/dual_pi_test.h
++++ b/Core/Inc/dual_pi_test.h
+@@ -57,6 +57,15 @@
+ #define DPT_LINE_TIMEOUT_MS 45000U
+ #define DPT_LINE_CENTER_MS 100U
+ #define DPT_LINE_INVALID_MS 100U
++/* Task 2: AB straight, BC arc, CD straight, DA arc. No remote operation. */
++#define DPT_TASK2_STRAIGHT_MM 1000.0f
++#define DPT_TASK2_ARC_MM DPT_LINE_MM /* User confirmed field radius600mm: keep the tuned half-circle length. */
++#define DPT_TASK2_STRAIGHT_MMPS 200.0f
++#define DPT_TASK2_TIMEOUT_MS 45000U /* Development guard; acceptance requires <=30s. */
++#define DPT_TASK2_ENTRY_WINDOW_MM 200.0f
++#define DPT_TASK2_EXIT_WINDOW_MM 200.0f
++#define DPT_TASK2_EDGE_MS 30U
++#define DPT_TASK2_END_ANGLE_DEG 20.0f
+ void DualPITest_EnableHeading(int mpu_initialized);
+ void DualPITest_Poll(uint32_t tick10_count);
+ #endif

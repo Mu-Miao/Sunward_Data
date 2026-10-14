@@ -1,0 +1,35 @@
+全工程ARM编译和链接通过。
+测试输出：/private/tmp/sunward-rightpi-check-d9o1q7i6/Sunward_rightpi_check.elf
+使用现场main，仅以接入包替代right_p_test.h/.c；未修改Sunward，未下载。新PI模块无警告。
+原工程旧诊断未使用警告：
+./Core/Src/main.c:331:12: warning: 'Lab_PIForward' defined but not used [-Wunused-function]
+  331 | static int Lab_PIForward(LabPI *pi, float target_mps, float measured_mps,
+      |            ^~~~~~~~~~~~~
+./Core/Src/main.c:318:14: warning: 'Lab_WheelSpeed' defined but not used [-Wunused-function]
+  318 | static float Lab_WheelSpeed(int32_t delta, int forward_sign,
+      |              ^~~~~~~~~~~~~~
+./Core/Src/main.c:295:13: warning: 'Lab_PrintMPURaw' defined but not used [-Wunused-function]
+  295 | static void Lab_PrintMPURaw(void)
+      |             ^~~~~~~~~~~~~~~
+./Core/Src/main.c:278:13: warning: 'Lab_PrintBatteryRaw' defined but not used [-Wunused-function]
+  278 | static void Lab_PrintBatteryRaw(void)
+      |             ^~~~~~~~~~~~~~~~~~~
+./Core/Src/main.c:257:13: warning: 'Lab_PrintTickRate' defined but not used [-Wunused-function]
+  257 | static void Lab_PrintTickRate(void)
+      |             ^~~~~~~~~~~~~~~~~
+./Core/Src/main.c:236:13: warning: 'Lab_PrintEncoders' defined but not used [-Wunused-function]
+  236 | static void Lab_PrintEncoders(void)
+      |             ^~~~~~~~~~~~~~~~~
+./Core/Src/main.c:205:13: warning: 'Lab_MotorTestOnce' defined but not used [-Wunused-function]
+  205 | static void Lab_MotorTestOnce(void)
+      |             ^~~~~~~~~~~~~~~~~
+./Core/Src/main.c:149:13: warning: 'Lab_PrintLine' defined but not used [-Wunused-function]
+  149 | static void Lab_PrintLine(void)
+      |             ^~~~~~~~~~~~~
+./Core/Src/main.c:61:17: warning: 'line_log_ms' defined but not used [-Wunused-variable]
+   61 | static uint32_t line_log_ms = 0U;
+      |                 ^~~~~~~~~~~
+
+主机模拟检查通过：持续速度偏差累积积分、上下限暂停积分、STOP/重新RUN清积分；原命令、方向、限幅、各项停车和计数/节拍/DWT回绕检查也通过。
+测试证据：/private/tmp/rightpi-host-check-vnx1rpde/测试结果.txt
+尚未实物下载或运行；实际PI速度趋势和停车后积分归零等待用户日志。

@@ -1,0 +1,12 @@
+{
+  "Core/Inc/car_config.h": "a90f82b79fad5363b83e1ad829fd81cfee7d5c4900c8039bbbeafd52d87eafb3",
+  "Core/Inc/car_task3.h": "3011c0d6244627f514230312f385e262c490194174e46b223d2d9b5bb650fcad",
+  "Core/Inc/car_task4.h": "4396f88f7ada999f6403b66dc77ac275dcae40ca3e378f644925fc11c19c0f02",
+  "Core/Src/car_task3.c": "19b41acf324d6be7ebd60ccf89ae24c979a34f75c5961639716067ebf6e0c932",
+  "Core/Src/car_task3_port.c": "50008d80d8b59148cfd02171797192c4fa0186d9c0680528fe6ee645d80c8348",
+  "Core/Src/car_ui.c": "8dc3871519e9aed7b21a0bd6320b1fbe8329b4072c95e203f94b68a5064bfeee",
+  "Core/Src/car_line.c": "2c21b46179646f41ccdb99c2c378e2b253b71b32e74b65f3d266b6b47adc1175",
+  "Core/Src/car_task4.c": "93c58e26dcf81776f4000b1969236108426fb8c34141aec521acc3b0a75f46df",
+  "Core/Src/car_route.c": "0e37f4e9e0e6bb64c234b3c2f36a40084b541a6c25e8b4197e085bfae62a1801",
+  "tools/tests/test_task4.c": "7fb365999339c7970427f2cfb0f7f79b0f0664e5bd4a7813ba64923fd0c44d05"
+}

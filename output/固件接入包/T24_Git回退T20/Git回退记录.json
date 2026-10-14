@@ -1,0 +1,40 @@
+{
+  "project": "/Users/mzh/STM32Cube/Sunward",
+  "restored_git_commit": "4334a9933c56284744901322ac33886a67674e31",
+  "matched_version": "T20",
+  "backup": "/Users/mzh/Desktop/车车/output/固件备份/Sunward_Git回退前留档_2026-10-12_k53adv86",
+  "restored_tracked_files": [
+    ".eide/eide.yml",
+    "Core/Inc/car_command.h",
+    "Core/Inc/car_config.h",
+    "Core/Inc/car_internal.h",
+    "Core/Inc/car_state.h",
+    "Core/Inc/car_task3.h",
+    "Core/Src/car_app.c",
+    "Core/Src/car_button.c",
+    "Core/Src/car_command.c",
+    "Core/Src/car_line.c",
+    "Core/Src/car_route.c",
+    "Core/Src/car_task3.c",
+    "Core/Src/car_ui.c",
+    "Core/Src/car_wheel.c",
+    "tools/tests/run_tests.py",
+    "tools/tests/test_task2.c",
+    "tools/tests/test_task3.c"
+  ],
+  "removed_saved_task4_files": [
+    "Core/Inc/car_task4.h",
+    "Core/Src/car_task4.c",
+    "tools/tests/test_task4.c"
+  ],
+  "git_clean": true,
+  "source_restore_complete": true,
+  "build_pass": true,
+  "flashed": false,
+  "sanitized_tests_pass": true,
+  "elf_hex_equal": true,
+  "flash_matches_T20": true,
+  "hex_sha256": "9b2e0fa9fe35e703034f32b447fdb7068e2b0e8a9dc281fe3c0a5506972fbad7",
+  "task3_title": "TASK 3 CAP V2",
+  "task4_present": false
+}

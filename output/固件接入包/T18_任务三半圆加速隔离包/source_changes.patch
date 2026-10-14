@@ -1,0 +1,123 @@
+--- a/Core/Inc/car_config.h
++++ b/Core/Inc/car_config.h
+@@ -73,7 +73,8 @@
+ #define DPT_TASK3_DIAGONAL_MMPS 240.0f
+ #define DPT_TASK3_ARC_MMPS 200.0f
+ #define DPT_TASK3_START_MMPS 50.0f
+-#define DPT_TASK3_ACCEL_MMPS2 150.0f
++#define DPT_TASK3_ACCEL_MMPS2 150.0f /* Diagonals only. */
++#define DPT_TASK3_ARC_ACCEL_MMPS2 100.0f /* Restore the pre-T17 arc entry ramp. */
+ #define DPT_TASK3_APPROACH_MM 100.0f
+ #define DPT_TASK3_MIN_MMPS 60.0f /* Capture still uses its own 50mm/s. */
+ #define DPT_TASK3_TURN_MMPS 80.0f
+--- a/Core/Inc/car_task3.h
++++ b/Core/Inc/car_task3.h
+@@ -17,6 +17,7 @@
+     float span_mm, radius_mm, arc_mm;
+     uint8_t start_from_ab; /* 1: initial nose A->B; 0: already A->C. */
+     float diagonal_mmps, arc_mmps, start_mmps, acceleration_mmps2;
++    float arc_acceleration_mmps2; /* Independent of diagonal acceleration. */
+     float turn_mmps, capture_mmps;
+     float entry_window_mm, exit_window_mm, turn_travel_limit_mm;
+     float capture_limit_mm, approach_mm, minimum_mmps;
+--- a/Core/Src/car_task3.c
++++ b/Core/Src/car_task3.c
+@@ -16,6 +16,7 @@
+     if (!positive(c->span_mm) || !positive(c->radius_mm) || !positive(c->arc_mm) ||
+         !positive(c->diagonal_mmps) || !positive(c->arc_mmps) ||
+         !positive(c->start_mmps) || !positive(c->acceleration_mmps2) ||
++        !positive(c->arc_acceleration_mmps2) ||
+         !positive(c->turn_mmps) || !positive(c->capture_mmps) ||
+         !positive(c->entry_window_mm) || !positive(c->exit_window_mm) ||
+         !positive(c->turn_travel_limit_mm) || !positive(c->capture_limit_mm) ||
+@@ -80,14 +81,14 @@
+ {
+     return (r->leg & 1U) ? tangent_heading(r, 0) : diagonal_heading(r);
+ }
+-static float speed(const CarTask3 *r, const CarTask3Input *i, float cruise, float remaining)
++static float speed(const CarTask3 *r, const CarTask3Input *i, float cruise, float remaining, float acceleration)
+ {
+     float v = cruise;
+     if (remaining < r->config.approach_mm) {
+         v *= fmaxf(remaining, 0.0f) / r->config.approach_mm;
+         v = fmaxf(v, r->config.minimum_mmps);
+     }
+-    float ramp = r->config.start_mmps + r->config.acceleration_mmps2 *
++    float ramp = r->config.start_mmps + acceleration *
+         (float)(uint32_t)(i->now_ms - r->phase_ms) / 1000.0f;
+     return fminf(v, ramp);
+ }
+@@ -99,7 +100,7 @@
+     CarTask3Config c = {
+         .span_mm=1000.0f, .radius_mm=400.0f, .arc_mm=1256.0f, .start_from_ab=1U,
+         .diagonal_mmps=200.0f, .arc_mmps=200.0f, .start_mmps=50.0f,
+-        .acceleration_mmps2=100.0f, .turn_mmps=60.0f, .capture_mmps=50.0f,
++        .acceleration_mmps2=100.0f, .arc_acceleration_mmps2=100.0f, .turn_mmps=60.0f, .capture_mmps=50.0f,
+         .entry_window_mm=120.0f, .exit_window_mm=200.0f,
+         .turn_travel_limit_mm=80.0f, .capture_limit_mm=60.0f,
+         .approach_mm=150.0f, .minimum_mmps=40.0f,
+@@ -169,7 +170,7 @@
+             stable(r, 0, i->now_ms);
+             o->control = T3_HOLD_HEADING;
+             o->heading_deg = target;
+-            o->base_mmps = speed(r, i, r->config.diagonal_mmps, r->diagonal_mm - progress);
++            o->base_mmps = speed(r, i, r->config.diagonal_mmps, r->diagonal_mm - progress, r->config.acceleration_mmps2);
+         }
+     } else if (r->phase == T3_ARC) {
+         int end_white = progress >= r->config.arc_mm - r->config.exit_window_mm &&
+@@ -192,7 +193,7 @@
+             } else {
+                 r->lost_seen = 0U;
+                 o->control = T3_FOLLOW_LINE;
+-                o->base_mmps = speed(r, i, r->config.arc_mmps, r->config.arc_mm - progress);
++                o->base_mmps = speed(r, i, r->config.arc_mmps, r->config.arc_mm - progress, r->config.arc_acceleration_mmps2);
+             }
+         }
+     } else if (r->phase == T3_VERTEX_BRAKE || r->phase == T3_FINAL_BRAKE || r->phase == T3_START_SETTLE) {
+--- a/Core/Src/car_route.c
++++ b/Core/Src/car_route.c
+@@ -11,6 +11,7 @@
+     c.arc_mm = DPT_TASK3_ARC_MM;
+     c.diagonal_mmps = DPT_TASK3_DIAGONAL_MMPS; c.arc_mmps = DPT_TASK3_ARC_MMPS;
+     c.start_mmps = DPT_TASK3_START_MMPS; c.acceleration_mmps2 = DPT_TASK3_ACCEL_MMPS2;
++    c.arc_acceleration_mmps2 = DPT_TASK3_ARC_ACCEL_MMPS2;
+     c.approach_mm = DPT_TASK3_APPROACH_MM; c.minimum_mmps = DPT_TASK3_MIN_MMPS;
+     c.turn_mmps = DPT_TASK3_TURN_MMPS; c.capture_mmps = DPT_TASK3_CAPTURE_MMPS;
+     c.deadline_ms = DPT_TASK3_TIMEOUT_MS;
+--- a/tools/tests/test_task3.c
++++ b/tools/tests/test_task3.c
+@@ -64,6 +64,7 @@
+   app()->route.task3.config.diagonal_mmps=200;
+   app()->route.task3.config.turn_mmps=60;
+   app()->route.task3.config.acceleration_mmps2=100;
++  app()->route.task3.config.arc_acceleration_mmps2=100;
+   app()->route.task3.config.approach_mm=150;
+   app()->route.task3.config.minimum_mmps=40;
+  }
+@@ -126,6 +127,26 @@
+  app()->route.distance_mm[0]=app()->route.distance_mm[1]=app()->route.task3.leg_start_mm+993;
+  app()->route.start_ms=ms-40000U;step(10,0,0);
+  assert(app()->runtime.state==TIMEOUT && app()->route.task3.fault==T3_TIMEOUT && fabsf(progress()-993)<.01f && a==0 && b==0);
++ /* Arc ramp remains independent from faster diagonals, both CB and DA. */
++ for(unsigned leg=1;leg<=3;leg+=2) {
++  task3_start();for(unsigned k=0;k<3500&&app()->runtime.state==RUNNING && !(app()->route.task3.phase==T3_ARC && app()->route.task3.leg==leg);k++)step_route();
++  assert(app()->route.task3.phase==T3_ARC && app()->route.task3.leg==leg);
++  assert(app()->route.task3.config.acceleration_mmps2==150 && app()->route.task3.config.arc_acceleration_mmps2==100);
++  /* At 182mm and 1s after entering the arc: 50+100*1.01=151, not 200. */
++  line_inputs=9;app()->route.task3.phase_ms=ms-1000;
++  app()->route.distance_mm[0]=app()->route.distance_mm[1]=app()->route.task3.leg_start_mm+182;
++  step(10,0,0);assert(app()->runtime.state==RUNNING && fabsf(app()->route.base-151)<.05f);
++  assert(app()->route.targets[0]<152 && app()->route.targets[1]<152);
++  /* Invalid sensors still stop on the first sample and latch F7 at 100ms. */
++  line_inputs=15;step(10,0,0);assert(a==0 && b==0 && app()->runtime.state==RUNNING);
++  for(unsigned k=0;k<10;k++)step(10,0,0);
++  assert(app()->runtime.state==LINE_LOST && app()->route.task3.fault==T3_LOST && fabsf(progress()-182)<.01f && a==0 && b==0);
++ }
++ /* A faster diagonal ramp does not bleed into an arc, and invalid new config fails closed. */
++ CarTask3Config c=CarRoute_Task3Config();c.arc_acceleration_mmps2=0;assert(!CarTask3_ConfigValid(&c));
++ c=CarRoute_Task3Config();c.arc_acceleration_mmps2=NAN;assert(!CarTask3_ConfigValid(&c));
++ task3_start();reach_phase(T3_DIAGONAL);line_inputs=15;app()->route.task3.phase_ms=ms-1000;
++ step(10,0,0);assert(fabsf(app()->route.base-201.5f)<.05f);
+  /* Busy new button press cancels; held press cannot restart. */
+  task3_start();release_key();press_key();assert(app()->runtime.state==STOPPED && a==0 && b==0 && app()->route.task3.phase==T3_FAULT);
+  for(unsigned i=0;i<200;i++)step(10,0,0);assert(app()->runtime.state==STOPPED);

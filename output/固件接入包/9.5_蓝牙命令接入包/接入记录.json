@@ -1,0 +1,8 @@
+{
+  "backup": "/Users/mzh/Desktop/车车/output/固件备份/Sunward_蓝牙接入前备份_2026-10-08_y96eg8eq",
+  "build_returncode": 0,
+  "hardware_downloaded": false,
+  "usb_baud": 115200,
+  "bluetooth_baud": 9600,
+  "hex_sha256": "71d5997349009a02ef9e4153edca00abf332550ae5847686160b7f7749e5deee"
+}

@@ -1,0 +1,2 @@
+Original live production modules fail the new off-centre capture regression as expected.
+Assertion failed: (app()->route.targets[0]<app()->route.targets[1] && app()->route.targets[0]>0), function main, file test_task3.c, line 100.

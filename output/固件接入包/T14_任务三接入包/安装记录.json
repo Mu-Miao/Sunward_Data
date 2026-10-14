@@ -1,0 +1,40 @@
+{
+  "project": "/Users/mzh/STM32Cube/Sunward",
+  "backup": "/Users/mzh/Desktop/车车/output/固件备份/Sunward_任务三接入前备份_2026-10-11_2coz7puq",
+  "modified": [
+    "Core/Inc/car_command.h",
+    "Core/Inc/car_route.h",
+    "Core/Inc/car_internal.h",
+    "Core/Inc/car_config.h",
+    "Core/Inc/car_state.h",
+    "Core/Src/car_button.c",
+    "Core/Src/car_ui.c",
+    "Core/Src/car_wheel.c",
+    "Core/Src/car_line.c",
+    "Core/Src/car_route.c",
+    "Core/Src/car_command.c",
+    "Core/Src/car_app.c",
+    "tools/tests/run_tests.py",
+    "tools/tests/test_task2.c",
+    ".eide/eide.yml"
+  ],
+  "added": [
+    "Core/Inc/car_task3_port.h",
+    "Core/Inc/car_task3.h",
+    "Core/Src/car_task3.c",
+    "Core/Src/car_task3_port.c",
+    "tools/tests/test_task3.c"
+  ],
+  "host_tests_sanitized_pass": true,
+  "full_arm_build_pass": true,
+  "hex_sha256": "b953aa908464f9eaac7e3bc48eacb9603a505b0b4380f9267edd7d6f0d127f39",
+  "flashed": false,
+  "physical_test_performed": false,
+  "ram_bytes": 5520,
+  "flash_bytes": 42324,
+  "installed_hex_equal_package": true,
+  "previous_reported_hex_sha256": "165e2a31d363a0696e39c2ed1ccbfbb363982ea0328f26c76e9d100fef530311",
+  "elf_sha256": "0abb806b2afb8bc0579500ca9c4b007dc29a74f4c668494a55fe235701ecd698",
+  "elf_hex_flash_data_equal": true,
+  "download_correction": "下载修正记录.json"
+}

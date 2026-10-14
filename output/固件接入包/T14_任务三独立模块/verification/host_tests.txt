@@ -1,0 +1,4 @@
+host: PASS: AC/CB/BD/DA geometry, left/right joins, five unique signals including start, final settled stop, restart, wrap, edge debounce, all fault/timeout guards. Host simulation only.
+sanitized: PASS: AC/CB/BD/DA geometry, left/right joins, five unique signals including start, final settled stop, restart, wrap, edge debounce, all fault/timeout guards. Host simulation only.
+port: PASS: T13 adapter snapshot, heading sign/wrap, zero-wheel turn targets, line reuse, brake/signal and fault dominance. No PWM commit.
+port_sanitized: PASS: T13 adapter snapshot, heading sign/wrap, zero-wheel turn targets, line reuse, brake/signal and fault dominance. No PWM commit.

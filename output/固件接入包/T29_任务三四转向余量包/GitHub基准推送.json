@@ -1,0 +1,10 @@
+{
+  "repository": "https://github.com/Mu-Miao/Sunward",
+  "branch": "main",
+  "baseline_commit": "647300237b77a8ed63d9c459ead725308eb5bc7e",
+  "pushed_before_angle_changes": true,
+  "baseline": "T28受限寻线及此前中文注释、容错修改",
+  "b_stop_issue_deferred_by_user": true,
+  "requested_turns": "A/B/C/D",
+  "first_trial_relief_deg": 5
+}

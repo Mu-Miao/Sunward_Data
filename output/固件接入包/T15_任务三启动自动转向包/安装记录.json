@@ -1,0 +1,29 @@
+{
+  "project": "/Users/mzh/STM32Cube/Sunward",
+  "backup": "/Users/mzh/Desktop/车车/output/固件备份/Sunward_任务三启动转向前备份_2026-10-11_uwyslvvc",
+  "modified": [
+    "Core/Inc/car_config.h",
+    "Core/Inc/car_task3.h",
+    "Core/Src/car_task3.c",
+    "Core/Src/car_ui.c",
+    "Core/Src/car_route.c",
+    "tools/tests/test_task3.c"
+  ],
+  "added": [],
+  "initial_heading": "A->B",
+  "initial_turn_deg": -38.65981,
+  "oled_title": "TASK 3 AUTO START",
+  "host_tests_sanitized_pass": true,
+  "full_arm_build_pass": true,
+  "elf_task3_symbols_present": true,
+  "elf_hex_flash_data_equal": true,
+  "hex_auto_start_title_present": true,
+  "debug_uploader_bin": "build/Debug/Sunward.hex",
+  "hex_sha256": "1ffd841ee4556884f3bc7ad63317c5e35fc3d5fe4c27a321bfc8bd0ce85b1242",
+  "elf_sha256": "c5f4a8df9abb232c388535fe03f4190b51ba70cd3d1a6306ebcecf68b8265561",
+  "hex_bytes": 120478,
+  "flash_bytes": 42800,
+  "ram_bytes": 5528,
+  "flashed": false,
+  "physical_test_performed": false
+}

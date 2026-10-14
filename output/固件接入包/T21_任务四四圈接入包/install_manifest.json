@@ -1,0 +1,22 @@
+{
+  "Core/Inc/car_command.h": "945cbec657b9bf8ed694a44ac03ba82c545815d8a6ea7ea171a5ac5a0aff4ccf",
+  "Core/Inc/car_internal.h": "d8c8ff2333a357d8f95eb501b645840cbc6f9c83e45be6811c222f0e73b2030c",
+  "Core/Inc/car_config.h": "aab0a4f05fe31d88b8c69a9adca6c635a804eb547d7149ebca4af7d17df26b2d",
+  "Core/Inc/car_state.h": "51e59a175beb08aaefab2b20a6f18b9aea5946cac7f217d6d13126d8b985e3a6",
+  "Core/Inc/car_task3.h": "55f771524d3c897a05cca77dccae2540ba954b52a6c6008d6eba5d7d7d621745",
+  "Core/Inc/car_task4.h": "f9e1ecbc670a57a258693db562725537a4e45d8012ad01d3df4c64ec3344b1bc",
+  "Core/Src/car_task3.c": "f2718cedab62c439ffe5b0656a50155c4c6ee8ae98a2a09ce2f9ac7dd77a1f6f",
+  "Core/Src/car_button.c": "49ea83fe068ac38ee9b4677b0c6389e312ea8d1fc8f04d4e2f1a8d3684920866",
+  "Core/Src/car_ui.c": "9aca5c6d6e030569efba0fd545ad68e21fbe094d6c2a74b4de12f36f2cfdff85",
+  "Core/Src/car_wheel.c": "9bf9407e69cb082166b4e3fc1be0a91a8d35710715c7876655e4153488f94b5e",
+  "Core/Src/car_line.c": "b77e852290aff0df9e8fc58171b5255f4b615efa0f0d97f7afcfeef454c81a02",
+  "Core/Src/car_task4.c": "4f49e2b5483838d29f5ed28919898cc83f3ee93be4cd534c5e5dc5e94eaae2b8",
+  "Core/Src/car_route.c": "b8147cdf8dcfedefa7b4210fb19c6e29e4ac719ce754297d54dc644a7c5e173f",
+  "Core/Src/car_command.c": "47c0d8432453af949254cdce2b4e9bf050c8bebf98cbba599eb6775ec09da68d",
+  "Core/Src/car_app.c": "79cf0ddea8854f6b0d2d5c05c7484d4bf667e206bfa168442d4e085fdc73c5e9",
+  "tools/tests/run_tests.py": "be0c4bdb796371dafe35b512d95a6b5ae4f2ea8beb8a6af959f9402bb90ba6a8",
+  "tools/tests/test_task4.c": "8cc13171eb64536c20481c3a44f55599e93c7b323e85e174211823c985df7634",
+  "tools/tests/test_task3.c": "fdd39474c0691615ed1df5e34aaca7d7b51133cfd990b9f75042359a5be81d9a",
+  "tools/tests/test_task2.c": "2fa97c331c5057148a6e2ec79961f41725496961957ed12bccbfc7fc3b75472c",
+  ".eide/eide.yml": "db8f16bf6aa595d68f5cc105785ebf8120d7bdf6c04d0870bcfa7d6c3c7a7d8b"
+}

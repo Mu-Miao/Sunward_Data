@@ -1,0 +1,28 @@
+{
+  "project": "/Users/mzh/STM32Cube/Sunward",
+  "backup": "/Users/mzh/Desktop/车车/output/固件备份/Sunward_任务三入弧修正前备份_2026-10-11_ncqt4d0f",
+  "modified": [
+    "Core/Src/car_task3.c",
+    "tools/tests/test_task3.c"
+  ],
+  "added": [],
+  "fix": "Off-centre valid line uses LF feedback in bounded capture",
+  "staged_live_flash_data_equal": true,
+  "before_fix_new_regression_failed": true,
+  "initial_heading": "A->B",
+  "initial_turn_deg": -38.65981,
+  "oled_title": "TASK 3 AUTO START",
+  "host_tests_sanitized_pass": true,
+  "full_arm_build_pass": true,
+  "elf_task3_symbols_present": true,
+  "elf_hex_flash_data_equal": true,
+  "hex_auto_start_title_present": true,
+  "debug_uploader_bin": "build/Debug/Sunward.hex",
+  "hex_sha256": "23da9869e92293440055de638f9d497271ac0edcf03c16ffbe4800e082063936",
+  "elf_sha256": "75359b1e2f3f2fe9d20f00d6babf3cdc8e2a10f8dd11239d48ccca53e87d5b19",
+  "hex_bytes": 120494,
+  "flash_bytes": 42808,
+  "ram_bytes": 5528,
+  "flashed": false,
+  "physical_test_performed": false
+}

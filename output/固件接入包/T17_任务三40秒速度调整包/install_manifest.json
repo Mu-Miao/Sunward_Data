@@ -1,0 +1,6 @@
+{
+  "Core/Inc/car_config.h": "83bdd10a5bd842e538a82c848ef086dc6bbe5cf8c66ec6163a307d6b2c37b7dc",
+  "Core/Src/car_task3.c": "d1b03ffebab11ccbe15f2e6f4ec29dd98446f21d158fee48c44ac6955e6aac7d",
+  "Core/Src/car_route.c": "caa433942d7da57ace3c8224444a1c9837bcd34daf0956f7e7a135aa4fe05339",
+  "tools/tests/test_task3.c": "617e7cda24e2e7bf214d92d2abd3d68b152ed953267feeff7994dca91ec5c266"
+}

@@ -1,0 +1,19 @@
+motion_legacy_api: PASS: prior serial GO100/GO20/heading/manual motion regression, timing/MPU/ADC/encoder/UART protections, braking/coast/settle/completion and unchanged ON key start/busy STOP.
+TRACE hash=008c971a251cb647 events=113009
+motion_car_app: PASS: prior serial GO100/GO20/heading/manual motion regression, timing/MPU/ADC/encoder/UART protections, braking/coast/settle/completion and unchanged ON key start/busy STOP.
+TRACE hash=008c971a251cb647 events=113009
+task2_legacy_api: PASS: calibrated1256mm BC endpoint regression; Task2 GPIO-only AB->BC->CD->DA->A four-point signals and final settled stop; white straight/black arc switching gated by distance, debounce and end heading; preserved half-circle settings and task1 regressions; four-mode keys, no BLE required, no premature entry/false arc loss endpoint; bounded missing edges, STOP/OFF/RX/IMU/FAST/GAP/LOW/ADC/STALL/REV/timeout protections, restart/held-key suppression, OLED limits and time wrap. Simulation is not field acceptance.
+TRACE hash=77ca3860c94e4d7d events=129925
+task2_car_app: PASS: calibrated1256mm BC endpoint regression; Task2 GPIO-only AB->BC->CD->DA->A four-point signals and final settled stop; white straight/black arc switching gated by distance, debounce and end heading; preserved half-circle settings and task1 regressions; four-mode keys, no BLE required, no premature entry/false arc loss endpoint; bounded missing edges, STOP/OFF/RX/IMU/FAST/GAP/LOW/ADC/STALL/REV/timeout protections, restart/held-key suppression, OLED limits and time wrap. Simulation is not field acceptance.
+TRACE hash=77ca3860c94e4d7d events=129925
+IDEAL target-following schedule: prior=39730 ms revised=33540 ms; hypothetical track=140mm, not field acceptance.
+Assertion failed: (app()->runtime.state==RUNNING && app()->route.task3.phase==T3_ARC), function main, file test_task3.c, line 218.
+
+Traceback (most recent call last):
+  File "/Users/mzh/Desktop/车车/output/T20_任务三有效线捕获修正包/staged_Sunward/tools/tests/run_tests.py", line 39, in <module>
+    result.check_returncode()
+    ~~~~~~~~~~~~~~~~~~~~~~~^^
+  File "/opt/miniconda3/lib/python3.13/subprocess.py", line 508, in check_returncode
+    raise CalledProcessError(self.returncode, self.args, self.stdout,
+                             self.stderr)
+subprocess.CalledProcessError: Command '['/var/folders/km/_7yflgx14vz590b21099ygr00000gn/T/sunward-host-tests-8gts894c/task3_legacy_api']' died with <Signals.SIGABRT: 6>.

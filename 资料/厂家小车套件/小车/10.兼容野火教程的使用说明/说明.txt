@@ -1,0 +1,3 @@
+C10B主板适配的野火电子STM32F103-Mini板子；
+教程下载链接为：https://doc.embedfire.com/products/link/zh/latest/mcu/stm32/stm32f103_mini.html
+教程由于硬件原因非全部教程都支持，具体支持功能请查看表格

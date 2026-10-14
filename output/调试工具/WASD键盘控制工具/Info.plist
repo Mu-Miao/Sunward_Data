@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>CFBundleIdentifier</key><string>local.c10b.wasd</string>
+<key>CFBundleName</key><string>C10B WASD</string>
+<key>NSBluetoothAlwaysUsageDescription</key><string>连接你选择的C10B小车蓝牙模块，发送键盘驾驶命令并接收实验日志。</string>
+</dict></plist>

@@ -1,0 +1,12 @@
+{
+  "backup": "/Users/mzh/Desktop/车车/output/固件备份/Sunward_任务三下载修正前备份_2026-10-11_bi0go3am",
+  "hex_sha256": "b953aa908464f9eaac7e3bc48eacb9603a505b0b4380f9267edd7d6f0d127f39",
+  "elf_sha256": "0abb806b2afb8bc0579500ca9c4b007dc29a74f4c668494a55fe235701ecd698",
+  "hex_bytes": 119136,
+  "elf_bytes": 473760,
+  "elf_task3_symbols_present": true,
+  "elf_hex_flash_data_equal": true,
+  "hex_task3_title_present": true,
+  "debug_uploader_bin": "build/Debug/Sunward.hex",
+  "flashed": false
+}

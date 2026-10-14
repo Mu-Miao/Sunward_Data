@@ -1,0 +1,79 @@
+--- a/Core/Src/dual_pi_test.c
++++ b/Core/Src/dual_pi_test.c
+@@ -24,7 +24,8 @@
+ static KeyAction key_action;
+ static uint8_t key_raw, key_stable, key_armed, key_press_enabled, ready_led_on;
+ static uint32_t key_change_ms, key_events, key_log_ms;
+-static uint32_t oled_render_ms, oled_log_ms;
++static uint32_t oled_render_ms, oled_log_ms, line_log_ms;
++static uint8_t line_raw[4];
+ static uint16_t distance_count[2];
+ static uint8_t distance_tracking, settle_seen;
+ static uint32_t brake_ms, settle_ms;
+@@ -400,7 +401,8 @@
+     key_events = 0U;
+     key_action = KEY_NONE;
+     oled_render_ms = now - 200U;
+-    oled_log_ms = now;
++    oled_log_ms = line_log_ms = now;
++    memset(line_raw, 0, sizeof line_raw);
+     if (LabUART_Begin(u) != HAL_OK) return HAL_ERROR;
+     if (!LabUART_TryWrite(banner, sizeof banner - 1U)) return HAL_ERROR;
+     inputs[LAB_UART_USB].ms = now;
+@@ -453,6 +455,16 @@
+     if (out >= 1200.0f && measured < 5.0f) w->stall_us += dt_us;
+     else w->stall_us = 0;
+     if (w->stall_us >= 500000U) stop(STALL, wheel_name[i]);
++}
++
++/* LF04 raw electrical inputs only; physical order and black/white polarity
++   remain to be measured. Static OFF diagnostics never steer or start motion. */
++static void read_line(void)
++{
++    line_raw[0] = HAL_GPIO_ReadPin(GPIOC, GPIO_PIN_8) == GPIO_PIN_SET;
++    line_raw[1] = HAL_GPIO_ReadPin(GPIOC, GPIO_PIN_4) == GPIO_PIN_SET;
++    line_raw[2] = HAL_GPIO_ReadPin(GPIOC, GPIO_PIN_9) == GPIO_PIN_SET;
++    line_raw[3] = HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_8) == GPIO_PIN_SET;
+ }
+ 
+ /* Low-rate text snapshots; SPI is sent in bounded chunks after control. */
+@@ -470,14 +482,19 @@
+         char cal[24], run[24], progress[32];
+         (void)snprintf(cal, sizeof cal, "YC %s EN %s", phases[yaw_phase], enabled ? "ON" : "OFF");
+         (void)snprintf(run, sizeof run, "STATE %s", states[state]);
+-        if (is_distance(motion))
++        if (!enabled) {
++            read_line();
++            (void)snprintf(progress, sizeof progress, "LF %u %u %u %u",
++                (unsigned)line_raw[0], (unsigned)line_raw[1], (unsigned)line_raw[2], (unsigned)line_raw[3]);
++        } else if (is_distance(motion))
+             (void)snprintf(progress, sizeof progress, "S %d/%dmm",
+                 rounded((distance_mm[LEFT] + distance_mm[RIGHT]) * 0.5f), rounded(distance_goal));
+         else if (motion == MOVE_NONE)
+             (void)snprintf(progress, sizeof progress, "S 0/1000mm");
+         else (void)snprintf(progress, sizeof progress, "V %dmm/s", state == RUNNING ? rounded(targets[LEFT]) : 0);
+         const char *lines[4] = {title, cal, run, progress};
+-        if (TaskOLED_SetLines(lines)) oled_render_ms = now;
++        (void)TaskOLED_SetLines(lines);
++        oled_render_ms = now; /* Retry at next snapshot if a frame is still busy. */
+     }
+     TaskOLED_Poll(now);
+     if ((uint32_t)(now - oled_log_ms) >= 1000U) {
+@@ -489,6 +506,17 @@
+             if (bluetooth_on) (void)LabUART_TryWritePort(LAB_UART_BT, msg, (uint16_t)n);
+         }
+     }
++    if (!enabled && (uint32_t)(now - line_log_ms) >= 1000U) {
++        char msg[64];
++        int n = snprintf(msg, sizeof msg, "LINE O1=%u O2=%u O3=%u O4=%u\r\n",
++            (unsigned)line_raw[0], (unsigned)line_raw[1], (unsigned)line_raw[2], (unsigned)line_raw[3]);
++        line_log_ms = now;
++        if (n > 0 && n < (int)sizeof msg) {
++            (void)LabUART_TryWrite(msg, (uint16_t)n);
++            if (bluetooth_on) (void)LabUART_TryWritePort(LAB_UART_BT, msg, (uint16_t)n);
++        }
++    }
++
+ }
+ 
+ void DualPITest_Poll(uint32_t tick10_count)

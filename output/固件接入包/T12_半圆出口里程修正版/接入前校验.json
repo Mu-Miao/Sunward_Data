@@ -1,0 +1,14 @@
+{
+  "Core/Src/dual_pi_test.c": "a5f2849c41b87161bc6d54608bcc3127318cec008806482bbddf61881a9e0b8a",
+  "Core/Inc/dual_pi_test.h": "efe5e571ff68878d81bd803fce7764e5a1af8b7a20d1dfde1f5e151371128818",
+  "Core/Src/task_oled.c": "38acc09e01de03ce8afa73db6be22958f0de5a703f86fd4d9099ab3d91230b50",
+  "Core/Inc/task_oled.h": "aea4f21d7b20ce93aa310696cdd6d23bdc657debe578edb8572cc39442d5c368",
+  "Core/Src/main.c": "b3d62d5aca11232f204bc5dd9534f2e83508993682487825ec0ae795e2d3a0a8",
+  "Core/Src/gpio.c": "8875fe86381e2d15940fc952ec717678ed4b3de3e7518a2ffe0217e373c5b748",
+  "Core/Src/mpu6050.c": "31a861a81accb49d704ef1395c6074a0e68296596860f4f93e219dc58b0cb013",
+  "Core/Src/soft_i2c.c": "442f477f724a6eb6449eb4dde3b03b14be17722f74d15f0666be5e021e669455",
+  "Core/Src/lab_uart_async.c": "5b4c43ed051f3ec71c0c5d7c4e08307795722b7d93b387031a3b66c58fdfa6e2",
+  "Sunward.ioc": "227c53e5c9173a073feedf66b5ccd464b795b690aecccc05963b284b27d176c5",
+  ".eide/eide.yml": "284a8b0e2e51e6beb19107124407be7986a778d6f80085c794c52b7da9d1cbf6",
+  "build/Debug/builder.params": "8da4867ac0e9fbf90038500858807ef5d69b59308113495e5966539dc8febb7e"
+}

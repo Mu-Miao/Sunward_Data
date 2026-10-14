@@ -1,0 +1,32 @@
+{
+  "backup": "/Users/mzh/Desktop/车车/output/固件备份/Sunward_LF04静态显示前备份_2026-10-11_m_4fx6vk",
+  "hardware_downloaded": false,
+  "lf04_black_white_calibrated": false,
+  "source_files_changed": [
+    "Core/Src/dual_pi_test.c"
+  ],
+  "lf04_pins": [
+    "PC8",
+    "PC4",
+    "PC9",
+    "PB8"
+  ],
+  "lf04_raw_only": true,
+  "off_display": "LF O1 O2 O3 O4 values",
+  "on_display": "original mileage/target speed",
+  "unchanged_files_checked": [
+    "Core/Inc/dual_pi_test.h",
+    "Core/Src/task_oled.c",
+    "Core/Inc/task_oled.h",
+    "Core/Src/main.c",
+    "Core/Src/gpio.c",
+    "Core/Src/mpu6050.c",
+    "Core/Src/soft_i2c.c",
+    "Core/Src/lab_uart_async.c",
+    "Sunward.ioc",
+    ".eide/eide.yml",
+    "build/Debug/builder.params"
+  ],
+  "build_returncode": 0,
+  "hex_sha256": "afeb293a8e2bad0b0ff8856e7115b324f600d8b2c47242ecff738fd6ec27e3b0"
+}

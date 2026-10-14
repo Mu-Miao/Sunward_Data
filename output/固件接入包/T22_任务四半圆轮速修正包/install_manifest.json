@@ -1,0 +1,6 @@
+{
+  "Core/Inc/car_config.h": "52b11e047c387a1f4788067d292a3d632f9d9a3d76d8a23a769e467bcdc8ee30",
+  "Core/Src/car_ui.c": "cc13567d05abc526a05c55eabb89b8b0f5eef69dec6a676c20abcd7f327b8075",
+  "Core/Src/car_task4.c": "188ce6eda49c2338d4924592069f8180e4dee81fb12c08933490df922221dce7",
+  "tools/tests/test_task4.c": "486fa8ae60adf75ba4df79b0f82b5ad83d56ce11ec59f4ec7d3748519dde62df"
+}

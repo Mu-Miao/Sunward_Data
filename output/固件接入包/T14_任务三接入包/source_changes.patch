@@ -1,0 +1,1034 @@
+--- a/Core/Inc/car_command.h
++++ b/Core/Inc/car_command.h
+@@ -3,6 +3,6 @@
+ #include "car_state.h"
+ 
+ /* Internal foreground module API; state lifetime is owned by CarApp. */
+-extern const char CarCommand_Banner[145];
++extern const char CarCommand_Banner[152];
+ void CarCommand_Poll(CarAppContext *app, uint32_t now, Motion *requested, uint8_t *stop_requested);
+ #endif
+--- a/Core/Inc/car_route.h
++++ b/Core/Inc/car_route.h
+@@ -3,6 +3,7 @@
+ #include "car_state.h"
+ 
+ /* Internal foreground module API; state lifetime is owned by CarApp. */
++CarTask3Config CarRoute_Task3Config(void);
+ int CarRoute_IsDistance(Motion motion);
+ void CarRoute_Select(CarAppContext *app, Motion selected, uint32_t now);
+ void CarRoute_Request(CarAppContext *app, Motion requested, uint32_t now);
+--- a/Core/Inc/car_internal.h
++++ b/Core/Inc/car_internal.h
+@@ -8,6 +8,7 @@
+ void CarApp_Stop(CarAppContext *app, TestState why, char faulty);
+ #include "car_button.h"
+ #include "car_route.h"
++#include "car_task3_port.h"
+ #include "car_heading.h"
+ #include "car_line.h"
+ #include "car_command.h"
+--- a/Core/Inc/car_config.h
++++ b/Core/Inc/car_config.h
+@@ -65,4 +65,20 @@
+ #define DPT_TASK2_EXIT_WINDOW_MM 200.0f
+ #define DPT_TASK2_EDGE_MS 30U
+ #define DPT_TASK2_END_ANGLE_DEG 20.0f
++/* Task 3 geometry and join guards; start A facing C. Positive yaw is left. */
++#define DPT_TASK3_SPAN_MM 1000.0f
++#define DPT_TASK3_RADIUS_MM 400.0f
++#define DPT_TASK3_ARC_MM 1256.0f
++#define DPT_TASK3_DIAGONAL_MMPS 200.0f
++#define DPT_TASK3_ARC_MMPS 200.0f
++#define DPT_TASK3_START_MMPS 50.0f
++#define DPT_TASK3_TURN_MMPS 60.0f
++#define DPT_TASK3_CAPTURE_MMPS 50.0f
++#define DPT_TASK3_TIMEOUT_MS 40000U
++#define DPT_TASK3_ENTRY_WINDOW_MM 120.0f
++#define DPT_TASK3_EXIT_WINDOW_MM 200.0f
++#define DPT_TASK3_TURN_LIMIT_MM 80.0f
++#define DPT_TASK3_CAPTURE_LIMIT_MM 60.0f
++#define DPT_TASK3_TURN_TIMEOUT_MS 4000U
++#define DPT_TASK3_CAPTURE_TIMEOUT_MS 2000U
+ #endif
+--- a/Core/Inc/car_state.h
++++ b/Core/Inc/car_state.h
+@@ -2,6 +2,7 @@
+ #define CAR_STATE_H
+ #include "stm32f1xx_hal.h"
+ #include "lab_uart_async.h"
++#include "car_task3.h"
+ 
+ /* Internal application state. Owned by CarApp, used only in foreground.
+  * Hardware IRQs continue to communicate through lab_uart_async queues. */
+@@ -10,7 +11,7 @@
+     TIMEOUT, SETTLE_BAD, LINE_LOST, LINE_BAD } TestState;
+ enum { LEFT = 0, RIGHT = 1 };
+ typedef enum { MOVE_NONE, MOVE_TEST, MOVE_FORWARD, MOVE_BACK, MOVE_LEFT,
+-    MOVE_RIGHT, MOVE_HEADING, MOVE_DISTANCE, MOVE_ROUTE, MOVE_LINE, MOVE_TASK2 } Motion;
++    MOVE_RIGHT, MOVE_HEADING, MOVE_DISTANCE, MOVE_ROUTE, MOVE_LINE, MOVE_TASK2, MOVE_TASK3 } Motion;
+ typedef enum { Y_NONE, Y_WARM, Y_CAL, Y_READY, Y_FAIL } YawPhase;
+ typedef enum { KEY_NONE, KEY_CAL, KEY_START, KEY_STOP, KEY_WAIT, KEY_BLOCK, KEY_MODE } KeyAction;
+ typedef enum { KEY_EVENT_NONE, KEY_EVENT_SHORT, KEY_EVENT_HOLD } KeyEvent;
+@@ -101,6 +102,7 @@
+     uint32_t elapsed_ms;
+     float leg_start;
+     float start_heading;
++    CarTask3 task3;
+ } CarRouteState;
+ 
+ typedef struct {
+--- a/Core/Inc/car_task3_port.h
++++ b/Core/Inc/car_task3_port.h
+@@ -0,0 +1,14 @@
++#ifndef CAR_TASK3_PORT_H
++#define CAR_TASK3_PORT_H
++#include "car_task3.h"
++#include "car_state.h"
++
++/* T13 adapter. The scheduler still owns start, stop, sampling and PWM commit. */
++CarTask3Input CarTask3Port_Input(const CarAppContext *app, uint32_t now,
++    int enabled, int stop_requested, int protection_fault);
++/* Call only after checking route.phase, all protection gates and enable.
++ * HALT clears both PI controllers. No function commits a positive PWM. */
++void CarTask3Port_Apply(CarAppContext *app, const CarTask3Output *output,
++    uint32_t now);
++TestState CarTask3Port_StopState(CarTask3Fault fault);
++#endif
+--- a/Core/Inc/car_task3.h
++++ b/Core/Inc/car_task3.h
+@@ -0,0 +1,63 @@
++#ifndef CAR_TASK3_H
++#define CAR_TASK3_H
++#include <stdint.h>
++
++/* Foreground-only route core. No HAL, PWM, GPIO, UART or global state.
++ * Yaw increases on a left turn. Place A facing C before Start(). */
++typedef enum { T3_IDLE, T3_DIAGONAL, T3_VERTEX_BRAKE, T3_ALIGN,
++    T3_CAPTURE, T3_ARC, T3_FINAL_BRAKE, T3_DONE, T3_FAULT } CarTask3Phase;
++typedef enum { T3_OK, T3_CONFIG, T3_ABORT, T3_SENSOR, T3_TIMEOUT,
++    T3_HEADING, T3_EDGE, T3_LOST, T3_TURN, T3_SETTLE, T3_DISTANCE } CarTask3Fault;
++typedef enum { T3_HALT, T3_HOLD_HEADING, T3_TURN_FORWARD,
++    T3_FOLLOW_LINE } CarTask3Control;
++typedef enum { T3_NO_POINT, T3_POINT_A, T3_POINT_B,
++    T3_POINT_C, T3_POINT_D } CarTask3Point;
++
++typedef struct {
++    float span_mm, radius_mm, arc_mm;
++    float diagonal_mmps, arc_mmps, start_mmps, acceleration_mmps2;
++    float turn_mmps, capture_mmps;
++    float entry_window_mm, exit_window_mm, turn_travel_limit_mm;
++    float capture_limit_mm, approach_mm, minimum_mmps;
++    float diagonal_tolerance_deg, arc_tolerance_deg, align_tolerance_deg;
++    uint32_t deadline_ms, settle_ms, brake_timeout_ms, align_timeout_ms;
++    uint32_t capture_timeout_ms, debounce_ms, lost_ms, sample_max_age_ms;
++} CarTask3Config;
++
++typedef struct {
++    uint32_t now_ms, sample_age_ms;
++    float distance_mm; /* Signed encoder mean; includes alignment travel. */
++    float yaw_deg, left_mmps, right_mmps;
++    uint8_t heading_ready, line_valid, black_count, centered;
++    uint8_t enabled, stop_requested, protection_fault;
++} CarTask3Input;
++
++typedef struct {
++    CarTask3Control control;
++    float heading_deg, base_mmps;
++    float left_mmps, right_mmps; /* Only used by T3_TURN_FORWARD. */
++    CarTask3Point signal_point; /* One update pulse; caller times sound/light. */
++    uint8_t start_signal, reset_controllers;
++} CarTask3Output;
++
++typedef struct {
++    CarTask3Config config;
++    CarTask3Phase phase;
++    CarTask3Fault fault;
++    uint8_t leg; /* 0 AC, 1 CB, 2 BD, 3 DA */
++    uint8_t edge_seen, settled_seen, lost_seen, pending_start_signal;
++    uint32_t start_ms, phase_ms, edge_ms, settled_ms, lost_start_ms;
++    uint32_t previous_ms, elapsed_ms;
++    float diagonal_mm, diagonal_angle_deg, start_heading_deg;
++    float leg_start_mm, phase_start_mm;
++} CarTask3;
++
++int CarTask3_ConfigValid(const CarTask3Config *config);
++CarTask3Config CarTask3_DefaultConfig(void);
++int CarTask3_Start(CarTask3 *route, const CarTask3Config *config,
++    const CarTask3Input *input);
++void CarTask3_Update(CarTask3 *route, const CarTask3Input *input,
++    CarTask3Output *output);
++void CarTask3_Cancel(CarTask3 *route);
++const char *CarTask3_LegName(const CarTask3 *route);
++#endif
+--- a/Core/Src/car_task3.c
++++ b/Core/Src/car_task3.c
+@@ -0,0 +1,259 @@
++#include "car_task3.h"
++#include <math.h>
++#include <string.h>
++
++static float wrap(float a)
++{
++    a = fmodf(a + 180.0f, 360.0f);
++    if (a < 0.0f) a += 360.0f;
++    return a - 180.0f;
++}
++static int positive(float a) { return isfinite(a) && a > 0.0f; }
++static int bounded_time(uint32_t t) { return t > 0U && t <= 80000U; }
++static int config_valid(const CarTask3Config *c)
++{
++    if (!positive(c->span_mm) || !positive(c->radius_mm) || !positive(c->arc_mm) ||
++        !positive(c->diagonal_mmps) || !positive(c->arc_mmps) ||
++        !positive(c->start_mmps) || !positive(c->acceleration_mmps2) ||
++        !positive(c->turn_mmps) || !positive(c->capture_mmps) ||
++        !positive(c->entry_window_mm) || !positive(c->exit_window_mm) ||
++        !positive(c->turn_travel_limit_mm) || !positive(c->capture_limit_mm) ||
++        !positive(c->approach_mm) || !positive(c->minimum_mmps) ||
++        !positive(c->diagonal_tolerance_deg) || !positive(c->arc_tolerance_deg) ||
++        !positive(c->align_tolerance_deg)) return 0;
++    float diagonal = hypotf(c->span_mm, 2.0f * c->radius_mm);
++    return isfinite(diagonal) && diagonal < 10000.0f &&
++        c->entry_window_mm < diagonal * 0.5f && c->exit_window_mm < c->arc_mm * 0.5f &&
++        c->approach_mm < diagonal && c->diagonal_mmps <= 250.0f && c->arc_mmps <= 250.0f &&
++        c->start_mmps <= c->diagonal_mmps && c->start_mmps <= c->arc_mmps &&
++        c->minimum_mmps <= c->start_mmps && c->turn_mmps <= 100.0f && c->capture_mmps <= 100.0f &&
++        c->diagonal_tolerance_deg <= 20.0f && c->arc_tolerance_deg <= 20.0f &&
++        c->align_tolerance_deg <= 5.0f && bounded_time(c->deadline_ms) &&
++        bounded_time(c->settle_ms) && bounded_time(c->brake_timeout_ms) &&
++        c->brake_timeout_ms > c->settle_ms && bounded_time(c->align_timeout_ms) &&
++        bounded_time(c->capture_timeout_ms) && c->debounce_ms >= 30U && c->debounce_ms <= 100U &&
++        c->lost_ms >= c->debounce_ms && c->lost_ms <= 100U &&
++        c->sample_max_age_ms > 0U && c->sample_max_age_ms <= 20U;
++}
++static int input_valid(const CarTask3Config *c, const CarTask3Input *i)
++{
++    return isfinite(i->distance_mm) && isfinite(i->yaw_deg) &&
++        isfinite(i->left_mmps) && isfinite(i->right_mmps) && i->heading_ready &&
++        i->sample_age_ms <= c->sample_max_age_ms && i->black_count <= 4U &&
++        (!i->line_valid || (i->black_count > 0U && i->black_count < 4U)) &&
++        (!i->centered || (i->line_valid && i->black_count == 2U));
++}
++static void fault(CarTask3 *r, CarTask3Fault f)
++{
++    r->phase = T3_FAULT;
++    r->fault = f;
++    r->pending_start_signal = 0U;
++}
++static void phase(CarTask3 *r, CarTask3Phase p, const CarTask3Input *i, CarTask3Output *o)
++{
++    r->phase = p;
++    r->phase_ms = i->now_ms;
++    r->phase_start_mm = i->distance_mm;
++    r->edge_seen = r->settled_seen = r->lost_seen = 0U;
++    o->control = T3_HALT;
++    o->reset_controllers = 1U;
++}
++static int stable(CarTask3 *r, int matches, uint32_t now)
++{
++    if (!matches) { r->edge_seen = 0U; return 0; }
++    if (!r->edge_seen) { r->edge_seen = 1U; r->edge_ms = now; }
++    return (uint32_t)(now - r->edge_ms) >= r->config.debounce_ms;
++}
++static float diagonal_heading(const CarTask3 *r)
++{
++    /* Start faces AC. East is start+alpha. BD is east+180+alpha. */
++    return wrap(r->start_heading_deg + (r->leg == 2U ? 180.0f + 2.0f * r->diagonal_angle_deg : 0.0f));
++}
++static float tangent_heading(const CarTask3 *r, int end)
++{
++    float east = r->start_heading_deg + r->diagonal_angle_deg;
++    /* CB: east -> west (+180 left); DA: west -> east (-180 right). */
++    return wrap(east + ((r->leg == 1U ? end : !end) ? 180.0f : 0.0f));
++}
++static float align_heading(const CarTask3 *r)
++{
++    return (r->leg & 1U) ? tangent_heading(r, 0) : diagonal_heading(r);
++}
++static float speed(const CarTask3 *r, const CarTask3Input *i, float cruise, float remaining)
++{
++    float v = cruise;
++    if (remaining < r->config.approach_mm) {
++        v *= fmaxf(remaining, 0.0f) / r->config.approach_mm;
++        v = fmaxf(v, r->config.minimum_mmps);
++    }
++    float ramp = r->config.start_mmps + r->config.acceleration_mmps2 *
++        (float)(uint32_t)(i->now_ms - r->phase_ms) / 1000.0f;
++    return fminf(v, ramp);
++}
++
++int CarTask3_ConfigValid(const CarTask3Config *c) { return c && config_valid(c); }
++
++CarTask3Config CarTask3_DefaultConfig(void)
++{
++    CarTask3Config c = {
++        .span_mm=1000.0f, .radius_mm=400.0f, .arc_mm=1256.0f,
++        .diagonal_mmps=200.0f, .arc_mmps=200.0f, .start_mmps=50.0f,
++        .acceleration_mmps2=100.0f, .turn_mmps=60.0f, .capture_mmps=50.0f,
++        .entry_window_mm=120.0f, .exit_window_mm=200.0f,
++        .turn_travel_limit_mm=80.0f, .capture_limit_mm=60.0f,
++        .approach_mm=150.0f, .minimum_mmps=40.0f,
++        .diagonal_tolerance_deg=20.0f, .arc_tolerance_deg=20.0f, .align_tolerance_deg=3.0f,
++        .deadline_ms=40000U, .settle_ms=200U, .brake_timeout_ms=1500U,
++        .align_timeout_ms=4000U, .capture_timeout_ms=2000U,
++        .debounce_ms=30U, .lost_ms=100U, .sample_max_age_ms=15U
++    };
++    return c;
++}
++
++int CarTask3_Start(CarTask3 *r, const CarTask3Config *c, const CarTask3Input *i)
++{
++    if (!r || !c || !i) return 0;
++    if (r->phase != T3_IDLE && r->phase != T3_DONE && r->phase != T3_FAULT) return 0;
++    if (!config_valid(c)) { fault(r, T3_CONFIG); return 0; }
++    if (!input_valid(c, i)) { fault(r, T3_SENSOR); return 0; }
++    if (!i->enabled || i->stop_requested || i->protection_fault) { fault(r, T3_ABORT); return 0; }
++    if (fabsf(i->left_mmps) > 5.0f || fabsf(i->right_mmps) > 5.0f) { fault(r, T3_SETTLE); return 0; }
++    memset(r, 0, sizeof *r);
++    r->config = *c;
++    r->diagonal_mm = hypotf(c->span_mm, 2.0f * c->radius_mm);
++    r->diagonal_angle_deg = atan2f(2.0f * c->radius_mm, c->span_mm) * 57.2957795131f;
++    r->start_heading_deg = wrap(i->yaw_deg);
++    r->start_ms = r->phase_ms = r->previous_ms = i->now_ms;
++    r->leg_start_mm = r->phase_start_mm = i->distance_mm;
++    r->phase = T3_DIAGONAL;
++    r->pending_start_signal = 1U;
++    return 1;
++}
++
++void CarTask3_Cancel(CarTask3 *r) { if (r) fault(r, T3_ABORT); }
++
++void CarTask3_Update(CarTask3 *r, const CarTask3Input *i, CarTask3Output *o)
++{
++    if (!o) return;
++    memset(o, 0, sizeof *o); /* Every call starts at HALT; no stale wheel target. */
++    if (!r || !i || r->phase == T3_IDLE || r->phase == T3_DONE || r->phase == T3_FAULT) return;
++    r->elapsed_ms = (uint32_t)(i->now_ms - r->start_ms);
++    if (!i->enabled || i->stop_requested || i->protection_fault) fault(r, T3_ABORT);
++    else if (!input_valid(&r->config, i) || (uint32_t)(i->now_ms - r->previous_ms) > 20U) fault(r, T3_SENSOR);
++    else if (r->elapsed_ms >= r->config.deadline_ms) fault(r, T3_TIMEOUT);
++    r->previous_ms = i->now_ms;
++    if (r->phase == T3_FAULT) { o->reset_controllers = 1U; return; }
++    if (r->pending_start_signal) {
++        o->signal_point = T3_POINT_A;
++        o->start_signal = o->reset_controllers = 1U;
++        r->pending_start_signal = 0U;
++    }
++    float progress = i->distance_mm - r->leg_start_mm;
++    float phase_travel = i->distance_mm - r->phase_start_mm;
++    if (progress < -5.0f || phase_travel < -5.0f) fault(r, T3_DISTANCE);
++    else if (r->phase == T3_DIAGONAL) {
++        float target = diagonal_heading(r);
++        if (fabsf(wrap(target - i->yaw_deg)) > r->config.diagonal_tolerance_deg) fault(r, T3_HEADING);
++        else if (progress > r->diagonal_mm + r->config.entry_window_mm) fault(r, T3_EDGE);
++        else if (progress >= r->diagonal_mm - r->config.entry_window_mm && i->line_valid) {
++            /* Stop immediately at the candidate vertex. Debounce while stationary. */
++            o->reset_controllers = 1U;
++            if (stable(r, 1, i->now_ms)) {
++                o->signal_point = r->leg == 0U ? T3_POINT_C : T3_POINT_D;
++                phase(r, T3_VERTEX_BRAKE, i, o);
++            }
++        } else {
++            stable(r, 0, i->now_ms);
++            o->control = T3_HOLD_HEADING;
++            o->heading_deg = target;
++            o->base_mmps = speed(r, i, r->config.diagonal_mmps, r->diagonal_mm - progress);
++        }
++    } else if (r->phase == T3_ARC) {
++        int end_white = progress >= r->config.arc_mm - r->config.exit_window_mm &&
++            progress <= r->config.arc_mm + r->config.exit_window_mm && i->black_count == 0U &&
++            fabsf(wrap(tangent_heading(r, 1) - i->yaw_deg)) <= r->config.arc_tolerance_deg;
++        if (progress > r->config.arc_mm + r->config.exit_window_mm) fault(r, T3_EDGE);
++        else if (end_white) {
++            r->lost_seen = 0U;
++            o->reset_controllers = 1U;
++            if (stable(r, 1, i->now_ms)) {
++                if (r->leg == 3U) phase(r, T3_FINAL_BRAKE, i, o);
++                else { o->signal_point = T3_POINT_B; phase(r, T3_VERTEX_BRAKE, i, o); }
++            }
++        } else {
++            stable(r, 0, i->now_ms);
++            if (!i->line_valid) {
++                o->reset_controllers = 1U;
++                if (!r->lost_seen) { r->lost_seen = 1U; r->lost_start_ms = i->now_ms; }
++                else if ((uint32_t)(i->now_ms - r->lost_start_ms) >= r->config.lost_ms) fault(r, T3_LOST);
++            } else {
++                r->lost_seen = 0U;
++                o->control = T3_FOLLOW_LINE;
++                o->base_mmps = speed(r, i, r->config.arc_mmps, r->config.arc_mm - progress);
++            }
++        }
++    } else if (r->phase == T3_VERTEX_BRAKE || r->phase == T3_FINAL_BRAKE) {
++        if ((uint32_t)(i->now_ms - r->phase_ms) >= r->config.brake_timeout_ms) fault(r, T3_SETTLE);
++        else if (fabsf(i->left_mmps) <= 5.0f && fabsf(i->right_mmps) <= 5.0f) {
++            if (!r->settled_seen) { r->settled_seen = 1U; r->settled_ms = i->now_ms; }
++            if ((uint32_t)(i->now_ms - r->settled_ms) >= r->config.settle_ms) {
++                if (r->phase == T3_FINAL_BRAKE) {
++                    phase(r, T3_DONE, i, o);
++                    o->signal_point = T3_POINT_A;
++                } else {
++                    ++r->leg;
++                    phase(r, T3_ALIGN, i, o);
++                }
++            }
++        } else r->settled_seen = 0U;
++    } else if (r->phase == T3_ALIGN) {
++        float target = align_heading(r), error = wrap(target - i->yaw_deg);
++        if ((uint32_t)(i->now_ms - r->phase_ms) >= r->config.align_timeout_ms ||
++            phase_travel > r->config.turn_travel_limit_mm) fault(r, T3_TURN);
++        else if (fabsf(error) <= r->config.align_tolerance_deg) {
++            o->reset_controllers = 1U;
++            if (stable(r, 1, i->now_ms)) {
++                if (r->leg & 1U) phase(r, T3_CAPTURE, i, o);
++                else {
++                    phase(r, T3_DIAGONAL, i, o);
++                    r->leg_start_mm = i->distance_mm;
++                }
++            }
++        } else {
++            stable(r, 0, i->now_ms);
++            o->control = T3_TURN_FORWARD;
++            o->heading_deg = target;
++            /* Zero inner wheel, positive outer wheel. Never request reverse. */
++            o->left_mmps = error < 0.0f ? r->config.turn_mmps : 0.0f;
++            o->right_mmps = error > 0.0f ? r->config.turn_mmps : 0.0f;
++        }
++    } else if (r->phase == T3_CAPTURE) {
++        float target = tangent_heading(r, 0);
++        if ((uint32_t)(i->now_ms - r->phase_ms) >= r->config.capture_timeout_ms ||
++            phase_travel > r->config.capture_limit_mm) fault(r, T3_EDGE);
++        else if (fabsf(wrap(target - i->yaw_deg)) > r->config.diagonal_tolerance_deg) fault(r, T3_HEADING);
++        else if (i->centered) {
++            o->reset_controllers = 1U;
++            if (stable(r, 1, i->now_ms)) {
++                phase(r, T3_ARC, i, o);
++                /* Exclude vertex alignment/capture travel from arc progress. */
++                r->leg_start_mm = i->distance_mm;
++            }
++        } else {
++            stable(r, 0, i->now_ms);
++            o->control = T3_HOLD_HEADING;
++            o->heading_deg = target;
++            o->base_mmps = r->config.capture_mmps;
++        }
++    }
++    if (r->phase == T3_FAULT) {
++        memset(o, 0, sizeof *o);
++        o->reset_controllers = 1U;
++    }
++}
++
++const char *CarTask3_LegName(const CarTask3 *r)
++{
++    static const char *const names[] = {"AC", "CB", "BD", "DA"};
++    return r && r->leg < 4U ? names[r->leg] : "--";
++}
+--- a/Core/Src/car_task3_port.c
++++ b/Core/Src/car_task3_port.c
+@@ -0,0 +1,69 @@
++#include "car_task3_port.h"
++#include "car_internal.h"
++#include <math.h>
++
++CarTask3Input CarTask3Port_Input(const CarAppContext *app, uint32_t now,
++    int enabled, int stop_requested, int protection_fault)
++{
++    CarTask3Input i = {0};
++    i.now_ms = now;
++    i.sample_age_ms = (uint32_t)(now - app->line.sample_ms);
++    i.distance_mm = (app->route.distance_mm[LEFT] + app->route.distance_mm[RIGHT]) * 0.5f;
++    i.yaw_deg = app->heading.angle;
++    i.left_mmps = app->wheel.items[LEFT].velocity;
++    i.right_mmps = app->wheel.items[RIGHT].velocity;
++    i.heading_ready = app->heading.phase == Y_READY;
++    i.line_valid = app->line.valid;
++    i.black_count = app->line.count;
++    i.centered = app->line.valid && app->line.count == 2U && app->line.black[1] && app->line.black[2];
++    i.enabled = enabled != 0;
++    i.stop_requested = stop_requested != 0;
++    i.protection_fault = protection_fault != 0;
++    return i;
++}
++
++void CarTask3Port_Apply(CarAppContext *app, const CarTask3Output *o, uint32_t now)
++{
++    app->route.targets[LEFT] = app->route.targets[RIGHT] = 0.0f;
++    /* A latched app fault cannot be overridden by a previously computed intent. */
++    if (app->runtime.state != RUNNING) {
++        app->runtime.drive(0, 0);
++        CarWheel_Clear(app);
++        return;
++    }
++    if (o->reset_controllers || o->control == T3_HALT) {
++        app->runtime.drive(0, 0);
++        CarWheel_Clear(app);
++    }
++    if (o->control == T3_HOLD_HEADING) {
++        app->heading.reference = o->heading_deg;
++        app->heading.error = CarMath_WrapDegrees(o->heading_deg - app->heading.angle);
++        float limit = fminf(DPT_HEADING_MAX_DIFF, o->base_mmps * 0.5f);
++        app->heading.diff = fmaxf(-limit, fminf(limit, DPT_HEADING_GAIN * app->heading.error));
++        app->route.targets[LEFT] = o->base_mmps - app->heading.diff;
++        app->route.targets[RIGHT] = o->base_mmps + app->heading.diff;
++    } else if (o->control == T3_TURN_FORWARD) {
++        app->heading.reference = o->heading_deg;
++        app->heading.error = CarMath_WrapDegrees(o->heading_deg - app->heading.angle);
++        app->route.targets[LEFT] = o->left_mmps;
++        app->route.targets[RIGHT] = o->right_mmps;
++    } else if (o->control == T3_FOLLOW_LINE) {
++        CarLine_SetTargets(app, now, o->base_mmps);
++    }
++    if (app->runtime.state == RUNNING && o->signal_point != T3_NO_POINT) {
++        app->signal.ms = now;
++        CarSignal_Set(app, 1);
++    }
++}
++
++TestState CarTask3Port_StopState(CarTask3Fault f)
++{
++    switch (f) {
++    case T3_TIMEOUT: return TIMEOUT;
++    case T3_SENSOR: case T3_HEADING: case T3_TURN: return YAW_BAD;
++    case T3_LOST: return LINE_LOST;
++    case T3_SETTLE: return SETTLE_BAD;
++    case T3_EDGE: case T3_CONFIG: case T3_DISTANCE: return LINE_BAD;
++    case T3_ABORT: default: return STOPPED;
++    }
++}
+--- a/Core/Src/car_button.c
++++ b/Core/Src/car_button.c
+@@ -48,7 +48,7 @@
+     /* OFF selection is separate from starting. No pending movement is kept.
+        Serial STOP/RX errors or a busy press cannot select or queue a restart. */
+     if (!enabled && !was_busy && !(*stop_requested) &&
+-        ((*requested) == MOVE_LINE || (*requested) == MOVE_ROUTE || (*requested) == MOVE_TASK2)) {
++        ((*requested) == MOVE_LINE || (*requested) == MOVE_ROUTE || (*requested) == MOVE_TASK2 || (*requested) == MOVE_TASK3)) {
+         CarRoute_Select(app, (*requested), now);
+         (*requested) = MOVE_NONE;
+     }
+@@ -62,7 +62,7 @@
+                 (*stop_requested) = 1;
+                 app->button.action = KEY_STOP;
+             } else if (key_pressed == KEY_EVENT_HOLD && !enabled && !app->heading.cal_requested) {
+-                CarRoute_Select(app, app->button.selected_motion == MOVE_ROUTE ? MOVE_LINE : (app->button.selected_motion == MOVE_LINE ? MOVE_TASK2 : MOVE_ROUTE), now);
++                CarRoute_Select(app, app->button.selected_motion == MOVE_ROUTE ? MOVE_LINE : (app->button.selected_motion == MOVE_LINE ? MOVE_TASK2 : (app->button.selected_motion == MOVE_TASK2 ? MOVE_TASK3 : MOVE_ROUTE)), now);
+                 (*requested) = MOVE_NONE;
+                 app->button.action = KEY_MODE;
+             } else if (key_pressed == KEY_EVENT_SHORT && !enabled && app->heading.available) {
+--- a/Core/Src/car_ui.c
++++ b/Core/Src/car_ui.c
+@@ -10,7 +10,8 @@
+         static const char *const states[] = {"IDLE", "RUN", "DONE", "OFF", "LOW",
+             "ADC", "GAP", "REV", "FAST", "STALL", "UART", "STOP", "YAW", "BRAKE", "TIMEOUT", "SETTLE", "LOST", "LINE"};
+         const char *title = "TASK 1 A->B";
+-        if (app->route.motion == MOVE_TASK2 || (app->route.motion == MOVE_NONE && app->button.selected_motion == MOVE_TASK2)) title = "TASK 2 ONE LAP";
++        if (app->route.motion == MOVE_TASK3 || (app->route.motion == MOVE_NONE && app->button.selected_motion == MOVE_TASK3)) title = "TASK 3 AC CB BD DA";
++        else if (app->route.motion == MOVE_TASK2 || (app->route.motion == MOVE_NONE && app->button.selected_motion == MOVE_TASK2)) title = "TASK 2 ONE LAP";
+         else if (app->route.motion == MOVE_LINE || (app->route.motion == MOVE_NONE && app->button.selected_motion == MOVE_LINE)) title = "TEST HALF ARC";
+         else if (app->route.motion == MOVE_DISTANCE) title = "TEST GO20";
+         else if (app->route.motion == MOVE_HEADING) title = "TEST GO";
+@@ -25,11 +26,21 @@
+             (void)snprintf(run, sizeof run, "%s %s T%lu.%lus", states[app->runtime.state], legs[app->route.leg],
+                 (unsigned long)(elapsed / 1000U), (unsigned long)((elapsed / 100U) % 10U));
+         }
++        if (app->route.motion == MOVE_TASK3 || (app->route.motion == MOVE_NONE && app->button.selected_motion == MOVE_TASK3)) {
++            uint32_t elapsed = app->runtime.state == RUNNING ? (uint32_t)(now - app->route.start_ms) : app->route.elapsed_ms;
++            (void)snprintf(run, sizeof run, "%s %s T%lu.%lus", states[app->runtime.state], CarTask3_LegName(&app->route.task3),
++                (unsigned long)(elapsed / 1000U), (unsigned long)((elapsed / 100U) % 10U));
++        }
+         if (!enabled) {
+             CarLine_Read(app);
+             (void)snprintf(progress, sizeof progress, "LF %u %u %u %u",
+                 (unsigned)app->line.raw[0], (unsigned)app->line.raw[1], (unsigned)app->line.raw[2], (unsigned)app->line.raw[3]);
+-        } else if (app->route.motion == MOVE_TASK2 || (app->route.motion == MOVE_NONE && app->button.selected_motion == MOVE_TASK2))
++        } else if (app->route.motion == MOVE_TASK3 || (app->route.motion == MOVE_NONE && app->button.selected_motion == MOVE_TASK3))
++            (void)snprintf(progress, sizeof progress, "P%u F%u S%d Y%d",
++                (unsigned)app->route.task3.phase, (unsigned)app->route.task3.fault,
++                CarMath_Round((app->route.distance_mm[LEFT] + app->route.distance_mm[RIGHT]) * 0.5f - app->route.task3.leg_start_mm),
++                CarMath_Round(app->heading.angle));
++        else if (app->route.motion == MOVE_TASK2 || (app->route.motion == MOVE_NONE && app->button.selected_motion == MOVE_TASK2))
+             (void)snprintf(progress, sizeof progress, "LF%u%u%u%u S%d",
+                 (unsigned)app->line.raw[0], (unsigned)app->line.raw[1], (unsigned)app->line.raw[2], (unsigned)app->line.raw[3],
+                 CarMath_Round((app->route.distance_mm[LEFT] + app->route.distance_mm[RIGHT]) * 0.5f - app->route.leg_start));
+@@ -57,14 +68,14 @@
+             if (app->runtime.bluetooth_on) (void)LabUART_TryWritePort(LAB_UART_BT, msg, (uint16_t)n);
+         }
+     }
+-    if ((!enabled || app->button.selected_motion == MOVE_LINE || app->route.motion == MOVE_LINE || app->button.selected_motion == MOVE_TASK2 || app->route.motion == MOVE_TASK2) && (uint32_t)(now - app->ui.line_log_ms) >= 1000U) {
++    if ((!enabled || app->button.selected_motion == MOVE_LINE || app->route.motion == MOVE_LINE || app->button.selected_motion == MOVE_TASK2 || app->route.motion == MOVE_TASK2 || app->button.selected_motion == MOVE_TASK3 || app->route.motion == MOVE_TASK3) && (uint32_t)(now - app->ui.line_log_ms) >= 1000U) {
+         char msg[128];
+         int n;
+-        if (app->button.selected_motion == MOVE_LINE || app->route.motion == MOVE_LINE || app->button.selected_motion == MOVE_TASK2 || app->route.motion == MOVE_TASK2)
++        if (app->button.selected_motion == MOVE_LINE || app->route.motion == MOVE_LINE || app->button.selected_motion == MOVE_TASK2 || app->route.motion == MOVE_TASK2 || app->button.selected_motion == MOVE_TASK3 || app->route.motion == MOVE_TASK3)
+             n = snprintf(msg, sizeof msg, "LINE RAW=%u%u%u%u E100=%d C=%d VALID=%u CENTER=%u MODE=%s SEG=%u\r\n",
+                 (unsigned)app->line.raw[0], (unsigned)app->line.raw[1], (unsigned)app->line.raw[2], (unsigned)app->line.raw[3],
+                 CarMath_Round(app->line.error * 100.0f), CarMath_Round(app->line.diff), (unsigned)app->line.valid, (unsigned)app->line.center_ready,
+-                app->route.motion == MOVE_TASK2 || app->button.selected_motion == MOVE_TASK2 ? "TASK2" : "HALF", (unsigned)app->route.leg);
++                app->route.motion == MOVE_TASK3 || app->button.selected_motion == MOVE_TASK3 ? "TASK3" : (app->route.motion == MOVE_TASK2 || app->button.selected_motion == MOVE_TASK2 ? "TASK2" : "HALF"), (unsigned)app->route.leg);
+         else n = snprintf(msg, sizeof msg, "LINE O1=%u O2=%u O3=%u O4=%u\r\n",
+             (unsigned)app->line.raw[0], (unsigned)app->line.raw[1], (unsigned)app->line.raw[2], (unsigned)app->line.raw[3]);
+         app->ui.line_log_ms = now;
+@@ -81,7 +92,7 @@
+     if ((uint32_t)(now - app->ui.motion_log_ms) >= (CarRoute_IsDistance(app->route.motion) ? 400U : 200U)) {
+         static const char *const names[] = {"IDLE", "RUN", "DONE", "OFF", "LOW",
+             "ADC", "GAP", "REV", "FAST", "STALL", "UART", "STOP", "YAW", "BRAKE", "TIMEOUT", "SETTLE", "LOST", "LINE"};
+-        static const char *const modes[] = {"-", "TEST", "FWD", "BACK", "LEFT", "RIGHT", "HEAD", "DIST", "DIST", "LINE", "TASK2"};
++        static const char *const modes[] = {"-", "TEST", "FWD", "BACK", "LEFT", "RIGHT", "HEAD", "DIST", "DIST", "LINE", "TASK2", "TASK3"};
+         char msg[256];
+         int n = snprintf(msg, sizeof msg,
+             "DPI T=%d L=%d R=%d UL=%d UR=%d IL=%d IR=%d BAT=%lu DT=%lu ST=%s F=%c RXE=%lu TXD=%lu M=%s TL=%d TR=%d V=%u SEC=%lu\r\n",
+@@ -104,7 +115,7 @@
+             if (added <= 0 || added >= (int)(sizeof msg - (size_t)n)) n = (int)sizeof msg;
+             else n += added;
+         }
+-        if ((app->route.motion == MOVE_ROUTE || app->route.motion == MOVE_LINE || app->route.motion == MOVE_TASK2) && n > 1 && n < (int)sizeof msg) {
++        if ((app->route.motion == MOVE_ROUTE || app->route.motion == MOVE_LINE || app->route.motion == MOVE_TASK2 || app->route.motion == MOVE_TASK3) && n > 1 && n < (int)sizeof msg) {
+             n -= 2;
+             int added = snprintf(msg + n, sizeof msg - (size_t)n, " SIG=%u\r\n", (unsigned)app->signal.active);
+             if (added <= 0 || added >= (int)(sizeof msg - (size_t)n)) n = (int)sizeof msg;
+@@ -139,7 +150,7 @@
+         char msg[96];
+         int n = snprintf(msg, sizeof msg, "KEY EN=%u RAW=%u ARM=%u EVT=%lu ACT=%s %s\r\n",
+             (unsigned)enabled, (unsigned)app->button.raw, (unsigned)app->button.armed,
+-            (unsigned long)app->button.events, actions[app->button.action], app->button.selected_motion == MOVE_TASK2 ? "TASK=2" : (app->button.selected_motion == MOVE_LINE ? "TEST=HALF" : "TASK=1"));
++            (unsigned long)app->button.events, actions[app->button.action], app->button.selected_motion == MOVE_TASK3 ? "TASK=3" : (app->button.selected_motion == MOVE_TASK2 ? "TASK=2" : (app->button.selected_motion == MOVE_LINE ? "TEST=HALF" : "TASK=1")));
+         app->ui.button_log_ms = now;
+         if (n > 0 && n < (int)sizeof msg) {
+             (void)LabUART_TryWrite(msg, (uint16_t)n);
+--- a/Core/Src/car_wheel.c
++++ b/Core/Src/car_wheel.c
+@@ -32,6 +32,12 @@
+     if (w->bad_sign_us >= 50000U) {
+         CarApp_Stop(app, REVERSE, wheel_name[i]); return;
+     }
++    if (app->route.motion == MOVE_TASK3 && target == 0.0f) {
++        w->integral = 0.0f;
++        w->command = 0;
++        w->stall_us = 0U;
++        return; /* FAST and reverse checks above still apply. */
++    }
+     float out = CarPI_Update(target, measured, kp[i], ki[i], seconds, limit, &w->integral);
+     w->command = CarMath_Round(direction * out);
+     if (out >= 1200.0f && measured < 5.0f) w->stall_us += app->runtime.dt_us;
+--- a/Core/Src/car_line.c
++++ b/Core/Src/car_line.c
+@@ -30,7 +30,7 @@
+ 
+ void CarLine_Sample(CarAppContext *app, uint32_t now, int timing_ok)
+ {
+-    if (app->button.selected_motion != MOVE_LINE && app->route.motion != MOVE_LINE && app->button.selected_motion != MOVE_TASK2 && app->route.motion != MOVE_TASK2) return;
++    if (app->button.selected_motion != MOVE_LINE && app->route.motion != MOVE_LINE && app->button.selected_motion != MOVE_TASK2 && app->route.motion != MOVE_TASK2 && app->button.selected_motion != MOVE_TASK3 && app->route.motion != MOVE_TASK3) return;
+     if (!timing_ok) { app->line.center_seen = app->line.center_ready = 0U; return; }
+     CarLine_Decode(app);
+     app->line.sample_ms = now;
+--- a/Core/Src/car_route.c
++++ b/Core/Src/car_route.c
+@@ -1,9 +1,27 @@
+ /* 运动模式、定距和四段路线状态机。出口由里程/航向/稳定边沿共同判定。 */
+ #include "car_internal.h"
++#include <math.h>
++#include <string.h>
++
++CarTask3Config CarRoute_Task3Config(void)
++{
++    CarTask3Config c = CarTask3_DefaultConfig();
++    c.span_mm = DPT_TASK3_SPAN_MM; c.radius_mm = DPT_TASK3_RADIUS_MM;
++    c.arc_mm = DPT_TASK3_ARC_MM;
++    c.diagonal_mmps = DPT_TASK3_DIAGONAL_MMPS; c.arc_mmps = DPT_TASK3_ARC_MMPS;
++    c.start_mmps = DPT_TASK3_START_MMPS; c.acceleration_mmps2 = DPT_ROUTE_ACCEL_MMPS2;
++    c.turn_mmps = DPT_TASK3_TURN_MMPS; c.capture_mmps = DPT_TASK3_CAPTURE_MMPS;
++    c.deadline_ms = DPT_TASK3_TIMEOUT_MS;
++    c.entry_window_mm = DPT_TASK3_ENTRY_WINDOW_MM; c.exit_window_mm = DPT_TASK3_EXIT_WINDOW_MM;
++    c.turn_travel_limit_mm = DPT_TASK3_TURN_LIMIT_MM; c.capture_limit_mm = DPT_TASK3_CAPTURE_LIMIT_MM;
++    c.align_timeout_ms = DPT_TASK3_TURN_TIMEOUT_MS; c.capture_timeout_ms = DPT_TASK3_CAPTURE_TIMEOUT_MS;
++    c.settle_ms = DPT_DISTANCE_SETTLE_MS; c.brake_timeout_ms = DPT_DISTANCE_BRAKE_TIMEOUT_MS;
++    return c;
++}
+ 
+ int CarRoute_IsDistance(Motion m)
+ {
+-    return m == MOVE_DISTANCE || m == MOVE_ROUTE || m == MOVE_LINE || m == MOVE_TASK2;
++    return m == MOVE_DISTANCE || m == MOVE_ROUTE || m == MOVE_LINE || m == MOVE_TASK2 || m == MOVE_TASK3;
+ }
+ 
+ void CarRoute_Select(CarAppContext *app, Motion selected, uint32_t now)
+@@ -12,6 +30,7 @@
+     CarWheel_Clear(app);
+     CarSignal_Set(app, 0);
+     app->button.selected_motion = selected;
++    memset(&app->route.task3, 0, sizeof app->route.task3);
+     app->route.leg = app->route.edge_seen = 0U;
+     app->route.leg_start = 0.0f;
+     app->route.elapsed_ms = 0U;
+@@ -20,6 +39,8 @@
+     app->route.distance_mm[LEFT] = app->route.distance_mm[RIGHT] = 0.0f;
+     app->route.goal = app->button.selected_motion == MOVE_LINE ? DPT_LINE_MM :
+         (app->button.selected_motion == MOVE_TASK2 ? 2.0f * (DPT_TASK2_STRAIGHT_MM + DPT_TASK2_ARC_MM) : DPT_ROUTE_MM);
++    if (selected == MOVE_TASK3)
++        app->route.goal = 2.0f * (hypotf(DPT_TASK3_SPAN_MM, 2.0f * DPT_TASK3_RADIUS_MM) + DPT_TASK3_ARC_MM);
+     app->line.center_seen = app->line.center_ready = app->line.invalid_seen = 0U;
+     app->line.diff = 0.0f;
+     app->ui.button_log_ms = now - 1000U;
+@@ -35,6 +56,12 @@
+         CarLine_Decode(app); /* Fresh GPIO gate; never start from an old OLED frame. */
+         if (!app->line.center_ready || (uint32_t)(now - app->line.sample_ms) > 15U ||
+             !app->line.valid || !app->line.black[1] || !app->line.black[2] || app->line.count != 2U) return;
++    }
++    if (requested == MOVE_TASK3) {
++        if ((uint32_t)(now - app->runtime.old_ms) > 15U ||
++            fabsf(app->wheel.items[LEFT].velocity) > 5.0f || fabsf(app->wheel.items[RIGHT].velocity) > 5.0f) return;
++        CarLine_Decode(app);
++        app->line.sample_ms = now;
+     }
+     if (!app->runtime.on_seen || (uint32_t)(now - app->runtime.on_ms) < 100U) CarApp_Stop(app, OFF, '-');
+     else if (!app->power.valid || (uint32_t)(now - app->power.sample_ms) > 150U) CarApp_Stop(app, ADC_BAD, '-');
+@@ -82,6 +109,20 @@
+         app->route.start_ms = app->route.switch_ms = now;
+         app->route.switching = was_running;
+         app->runtime.fault_wheel = '-';
++        if (requested == MOVE_TASK3) {
++            CarTask3Config config = CarRoute_Task3Config();
++            CarTask3Input input = CarTask3Port_Input(app, now, 1, 0, 0);
++            if (!CarTask3_Start(&app->route.task3, &config, &input)) {
++                CarApp_Stop(app, CarTask3Port_StopState(app->route.task3.fault), '-');
++                return;
++            }
++            app->route.leg = 0U; app->route.leg_start = 0.0f; app->route.elapsed_ms = 0U;
++            app->route.goal = 2.0f * (app->route.task3.diagonal_mm + config.arc_mm);
++            app->route.cruise = config.diagonal_mmps;
++            app->route.base = 0.0f;
++            app->route.targets[LEFT] = app->route.targets[RIGHT] = 0.0f;
++            app->route.run_duration = config.deadline_ms;
++        }
+         app->runtime.state = RUNNING;
+     }
+ }
+@@ -143,11 +184,41 @@
+ 
+ int CarRoute_UsesHeading(CarAppContext *app)
+ {
+- return app->route.motion != MOVE_LINE && !CarRoute_IsArc(app); 
++ return app->route.motion != MOVE_TASK3 && app->route.motion != MOVE_LINE && !CarRoute_IsArc(app); 
+ }
+ 
+ void CarRoute_Update(CarAppContext *app, uint32_t now, const uint16_t count[2])
+ {
++    if (app->route.motion == MOVE_TASK3) {
++        if (app->runtime.state != RUNNING || !app->route.tracking) return;
++        for (unsigned i = 0; i < 2U; ++i) {
++            if (fabsf(app->wheel.items[i].velocity) > 350.0f) {
++                CarApp_Stop(app, FAST, i == LEFT ? 'L' : 'R');
++                return;
++            }
++        }
++        for (unsigned i = 0; i < 2U; ++i) {
++            app->route.distance_mm[i] += CarWheel_Millimetres(i, CarMath_Delta16(count[i], app->route.distance_count[i]));
++            app->route.distance_count[i] = count[i];
++        }
++        int enabled = HAL_GPIO_ReadPin(GPIOC, GPIO_PIN_13) == GPIO_PIN_RESET;
++        CarTask3Input input = CarTask3Port_Input(app, now, enabled, 0, 0);
++        CarTask3Output output;
++        CarTask3_Update(&app->route.task3, &input, &output);
++        app->route.leg = app->route.task3.leg;
++        app->route.leg_start = app->route.task3.leg_start_mm;
++        app->route.elapsed_ms = app->route.task3.elapsed_ms;
++        app->route.base = output.control == T3_TURN_FORWARD ?
++            (output.left_mmps + output.right_mmps) * 0.5f : output.base_mmps;
++        if (app->route.task3.phase == T3_FAULT) {
++            CarApp_Stop(app, CarTask3Port_StopState(app->route.task3.fault), '-');
++        } else if (app->route.task3.phase == T3_DONE) {
++            CarApp_Stop(app, DONE, '-');
++            app->signal.ms = now;
++            CarSignal_Set(app, 1); /* One final A signal, after settled stop. */
++        } else CarTask3Port_Apply(app, &output, now);
++        return; /* Old distance/Task2 logic must never overwrite Task3 intent. */
++    }
+                 /* Accumulate signed wheel travel only from the fresh start snapshot.
+                    Reject timing/implausible counts before declaring distance completion. */
+                 if (app->route.tracking && (app->runtime.state == RUNNING || app->runtime.state == BRAKING)) {
+--- a/Core/Src/car_command.c
++++ b/Core/Src/car_command.c
+@@ -3,7 +3,7 @@
+ #include <string.h>
+ 
+ const char CarCommand_Banner[] =
+-    "DPI KEY_U OFF:short=CAL,long1.5s=mode; READY+ON:press=start; busy:press=STOP; TASK2!/LF20!/GO100!/GO20!/GO!/RUN!/F!/B!/L!/R!/STOP!/CAL! V/TIME\r\n";
++    "DPI KEY_U OFF:short=CAL,long1.5s=mode; READY+ON:press=start; busy:press=STOP; TASK3!/TASK2!/LF20!/GO100!/GO20!/GO!/RUN!/F!/B!/L!/R!/STOP!/CAL! V/TIME\r\n";
+ 
+ static int unsigned_value(const char *text, unsigned *value)
+ {
+@@ -26,6 +26,7 @@
+             *stop_requested = 1;
+         }
+         if (strcmp(in->text, "CAL") == 0 && app->runtime.state != RUNNING) app->heading.cal_requested = 1;
++        if (strcmp(in->text, "TASK3") == 0) *requested = MOVE_TASK3;
+         if (strcmp(in->text, "TASK2") == 0) *requested = MOVE_TASK2;
+         if (strcmp(in->text, "LF20") == 0) *requested = MOVE_LINE;
+         if (strcmp(in->text, "GO20") == 0) *requested = MOVE_DISTANCE;
+--- a/Core/Src/car_app.c
++++ b/Core/Src/car_app.c
+@@ -24,6 +24,14 @@
+     }
+     if (app->route.motion == MOVE_TASK2 && (app->runtime.state == RUNNING || app->runtime.state == BRAKING))
+         app->route.elapsed_ms = (uint32_t)(HAL_GetTick() - app->route.start_ms);
++    if (app->route.motion == MOVE_TASK3 && (app->runtime.state == RUNNING || app->runtime.state == BRAKING)) {
++        app->route.elapsed_ms = (uint32_t)(HAL_GetTick() - app->route.start_ms);
++        app->route.task3.elapsed_ms = app->route.elapsed_ms;
++        if (why != DONE && app->route.task3.phase != T3_FAULT) {
++            CarTask3_Cancel(&app->route.task3);
++            if (why == TIMEOUT) app->route.task3.fault = T3_TIMEOUT;
++        }
++    }
+     app->runtime.state = why;
+     app->runtime.fault_wheel = faulty;
+     if (completed_route) {
+@@ -88,6 +96,8 @@
+         DPT_MANUAL_MAX_CMD <= 0 || DPT_MANUAL_MAX_CMD > 3000 ||
+         DPT_MANUAL_DURATION_MS < 1000U || DPT_MANUAL_DURATION_MS > 30000U) return HAL_ERROR;
+     if (!CarWheel_ConfigValid()) return HAL_ERROR;
++    CarTask3Config task3_config = CarRoute_Task3Config();
++    if (!CarTask3_ConfigValid(&task3_config)) return HAL_ERROR;
+     app->runtime.hz = HAL_RCC_GetHCLKFreq();
+     if (app->runtime.hz < 1000000U) return HAL_ERROR;
+     CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
+@@ -102,6 +112,7 @@
+     app->wheel.items[RIGHT].encoder = right_encoder;
+     app->runtime.state = IDLE;
+     app->route.motion = MOVE_NONE;
++    memset(&app->route.task3, 0, sizeof app->route.task3);
+     app->route.switching = 0;
+     app->route.manual_speed = DPT_MANUAL_MMPS;
+     app->route.manual_duration = DPT_MANUAL_DURATION_MS;
+@@ -231,6 +242,8 @@
+                         for (unsigned i = 0; i < 2U && app->runtime.state == RUNNING; ++i)
+                             CarWheel_Control(app, i, seconds);
+                         /* Commit both commands only if both wheels passed their checks. */
++                        if (app->runtime.state == RUNNING && HAL_GPIO_ReadPin(GPIOC, GPIO_PIN_13) != GPIO_PIN_RESET)
++                            CarApp_Stop(app, OFF, '-');
+                         if (app->runtime.state == RUNNING) app->runtime.drive(app->wheel.items[RIGHT].command, -app->wheel.items[LEFT].command);
+                     }
+                 }
+--- a/tools/tests/run_tests.py
++++ b/tools/tests/run_tests.py
+@@ -13,7 +13,7 @@
+ root = args.project.resolve()
+ tests = Path(__file__).resolve().parent
+ modules = sorted((root / 'Core/Src').glob('car_*.c'))
+-assert len(modules) == 11, 'Expected all 11 car modules in Core/Src'
++assert len(modules) == 13, 'Expected all 13 car modules in Core/Src'
+ assert not any('#include' in line and '.c"' in line
+                for path in modules for line in path.read_text().splitlines())
+ flags = [os.environ.get('CC', 'cc'), '-std=c11', '-Wall', '-Wextra', '-Werror',
+@@ -21,7 +21,7 @@
+ if args.sanitize:
+     flags += ['-fsanitize=address,undefined', '-fno-omit-frame-pointer']
+ with tempfile.TemporaryDirectory(prefix='sunward-host-tests-') as folder:
+-    for suite in ['motion', 'task2']:
++    for suite in ['motion', 'task2', 'task3']:
+         for public in [False, True]:
+             name = suite + ('_car_app' if public else '_legacy_api')
+             binary = str(Path(folder) / name)
+@@ -32,7 +32,10 @@
+                            for n in ['Begin', 'EnableBluetooth', 'EnableHeading', 'Poll']]
+             else:
+                 sources.append(str(root / 'Core/Src/dual_pi_test.c'))
+-            subprocess.run(flags + aliases + sources + ['-o', binary], check=True)
+-            result = subprocess.run([binary], capture_output=True, text=True, check=True)
++            subprocess.run(flags + aliases + sources + ['-lm', '-o', binary], check=True)
++            result = subprocess.run([binary], capture_output=True, text=True)
++            if result.returncode:
++                print(result.stdout + result.stderr, flush=True)
++                result.check_returncode()
+             print(name + ': ' + result.stdout.strip())
+-print('PASS: motion/task2 regressions; CarApp and compatibility APIs; separate module linkage.')
++print('PASS: motion/task2/task3 regressions; CarApp and compatibility APIs; separate module linkage.')
+--- a/tools/tests/test_task3.c
++++ b/tools/tests/test_task3.c
+@@ -0,0 +1,119 @@
++/* Reuse the existing mock hardware, run the actual scheduler and all modules. */
++#define main task2_regression_main
++#include "test_task2.c"
++#undef main
++
++static CarAppContext *app(void) { return CarApp_TestContext(); }
++static void task3_start(void)
++{
++ setup(); line_inputs=15;
++ hold();hold();hold();assert(app()->button.selected_motion==MOVE_TASK3);
++ release_key();press_key();release_key();
++ for(unsigned i=0;i<705;i++)step(10,0,0);
++ assert(app()->heading.phase==Y_READY); enable();press_key();
++ assert(app()->runtime.state==RUNNING&&app()->route.motion==MOVE_TASK3);
++ assert(!app()->runtime.bluetooth_on && wp[0]==0 && wp[1]==0);
++ assert(app()->route.run_duration==40000U && signals==1);
++}
++static float join_target(void)
++{
++ CarTask3 *t=&app()->route.task3;
++ return CarMath_WrapDegrees(t->start_heading_deg+t->diagonal_angle_deg+
++    (t->leg==2U ? 180.0f+t->diagonal_angle_deg : (t->leg==3U ? 180.0f : 0.0f)));
++}
++static void step_route(void)
++{
++ CarTask3 *t=&app()->route.task3;
++ float p=progress();int dl=0,dr=0;
++ switch(t->phase) {
++ case T3_DIAGONAL:
++  app()->heading.angle=CarMath_WrapDegrees(t->start_heading_deg+(t->leg==2U?180+2*t->diagonal_angle_deg:0));
++  line_inputs=p>=t->diagonal_mm?9:15;
++  if(app()->route.targets[0]>0)dl=dr=610;
++  break;
++ case T3_ARC:
++  line_inputs=p>=t->config.arc_mm?15:9;
++  app()->heading.angle=CarMath_WrapDegrees(t->start_heading_deg+t->diagonal_angle_deg+
++      (t->leg==1U ? fminf(p/t->config.arc_mm,1.0f)*180.0f : 180.0f-fminf(p/t->config.arc_mm,1.0f)*180.0f));
++  if(app()->route.targets[0]>0)dl=dr=610;
++  break;
++ case T3_ALIGN: {
++  float e=CarMath_WrapDegrees(join_target()-app()->heading.angle);
++  float turn=fmaxf(-2.0f,fminf(2.0f,e));app()->heading.angle=CarMath_WrapDegrees(app()->heading.angle+turn);
++  if(app()->route.targets[0]>0)dl=177;
++  if(app()->route.targets[1]>0)dr=176;
++  break;
++ }
++ case T3_CAPTURE: line_inputs=9;break;
++ default: break;
++ }
++ step(10,dl,dr);
++ assert(a>=0 && b<=0); /* Physical mapping, no backward wheel command. */
++ if(app()->runtime.state==RUNNING && app()->route.task3.phase==T3_ALIGN) {
++  if(app()->route.targets[0]==0)assert(app()->wheel.items[0].command==0);
++  if(app()->route.targets[1]==0)assert(app()->wheel.items[1].command==0);
++ }
++}
++static void reach_phase(CarTask3Phase phase)
++{
++ for(unsigned i=0;i<2500&&app()->runtime.state==RUNNING&&app()->route.task3.phase!=phase;i++)step_route();
++ assert(app()->runtime.state==RUNNING && app()->route.task3.phase==phase);
++}
++int main(void)
++{
++ task3_start();uint32_t start=app()->route.start_ms;
++ cmd("TASK3!");assert(app()->route.start_ms==start);
++ for(unsigned i=0;i<3500&&app()->runtime.state==RUNNING;i++)step_route();
++ assert(app()->runtime.state==DONE && app()->route.task3.phase==T3_DONE && signals==5 && a==0 && b==0);
++ assert(app()->route.elapsed_ms<40000 && app()->route.leg==3U && rp[0]==wp[0] && wp[1]==0);
++ for(unsigned i=0;i<50;i++)step(10,0,0);
++ assert(signals==5 && !app()->signal.active && strcmp(oled_lines[0],"TASK 3 AC CB BD DA")==0);
++ assert(strstr(oled_lines[2],"DONE DA T"));for(unsigned i=0;i<4;i++)assert(strlen(oled_lines[i])<=21);
++ /* Busy new button press cancels; held press cannot restart. */
++ task3_start();release_key();press_key();assert(app()->runtime.state==STOPPED && a==0 && b==0 && app()->route.task3.phase==T3_FAULT);
++ for(unsigned i=0;i<200;i++)step(10,0,0);assert(app()->runtime.state==STOPPED);
++ release_key();press_key();assert(app()->runtime.state==RUNNING && app()->route.task3.leg==0);
++ /* Turns bypass the legacy 20deg heading trip, zero wheel clears old integral. */
++ task3_start();reach_phase(T3_ALIGN);app()->wheel.items[0].integral=1700;step(10,0,0);
++ assert(app()->runtime.state==RUNNING && app()->route.targets[0]==0 && app()->wheel.items[0].integral==0 && b==0 && a>0);
++ /* Preserve specific app protection reasons and cancel task core in each phase. */
++ for(unsigned k=0;k<12;k++) {
++  task3_start();if(k>=6)reach_phase(T3_ARC);
++  switch(k%6) {
++  case 0:off=1;step(10,0,0);assert(app()->runtime.state==OFF);break;
++  case 1:queue(0,"STOP!TASK3!");step(10,0,0);assert(app()->runtime.state==STOPPED);break;
++  case 2:imu_fail=1;step(10,0,0);assert(app()->runtime.state==YAW_BAD);break;
++  case 3:adc_fail=1;app()->power.sample_ms=ms-100;step(10,0,0);assert(app()->runtime.state==ADC_BAD);break;
++  case 4:faults[0]=1;step(10,0,0);assert(app()->runtime.state==UART_BAD);break;
++  case 5:step(30,0,0);assert(app()->runtime.state==GAP);break;
++  }
++  assert(app()->route.task3.phase==T3_FAULT && a==0 && b==0);
++ }
++ task3_start();bat=1199;app()->power.sample_ms=ms-100;step(10,0,0);assert(app()->runtime.state==LOW && a==0 && b==0);
++ task3_start();off_during_read=1;step(10,0,0);assert(app()->runtime.state==OFF && a==0 && b==0);
++ task3_start();step(10,2000,0);assert(app()->runtime.state==FAST && a==0 && b==0);
++ task3_start();for(unsigned i=0;i<5;i++)step(10,0,-100);assert(app()->runtime.state==REVERSE && a==0 && b==0);
++ task3_start();for(unsigned i=0;i<55;i++)step(10,0,0);assert(app()->runtime.state==STALL && a==0 && b==0);
++ task3_start();reach_phase(T3_ARC);line_inputs=15;
++ for(unsigned i=0;i<11;i++)step(10,0,0);
++ assert(app()->runtime.state==LINE_LOST && app()->route.task3.fault==T3_LOST && a==0 && b==0);
++ task3_start();reach_phase(T3_ALIGN);app()->route.task3.phase_start_mm=-100;step(10,0,0);
++ assert(app()->runtime.state==YAW_BAD && app()->route.task3.fault==T3_TURN && a==0 && b==0);
++ task3_start();app()->route.start_ms=ms-40000U;step(10,0,0);
++ assert(app()->runtime.state==TIMEOUT && app()->route.task3.fault==T3_TIMEOUT && a==0 && b==0);
++ /* USB and BT fault/STOP priority; TX congestion doesn't stop the route. */
++ task3_start();assert(DualPITest_EnableBluetooth(&uart_mock)==HAL_ERROR);
++ task3_start();full_tx=1;for(unsigned i=0;i<100;i++)step_route();assert(app()->runtime.state==RUNNING);
++ full_tx=0;cmd("STOP!");assert(app()->runtime.state==STOPPED);
++ setup();line_inputs=15;hold();hold();hold();calibrate();assert(DualPITest_EnableBluetooth(&uart_mock)==HAL_OK);
++ enable();press_key();queue(1,"STOP!");queue(0,"TASK3!");step(10,0,0);assert(app()->runtime.state==STOPPED&&a==0&&b==0);
++ setup();line_inputs=15;hold();hold();hold();calibrate();assert(DualPITest_EnableBluetooth(&uart_mock)==HAL_OK);
++ enable();press_key();faults[1]=1;step(10,0,0);assert(app()->runtime.state==UART_BAD&&a==0&&b==0);
++ /* Millis and encoder counters cross their wrap boundaries during a full lap. */
++ setup();line_inputs=15;hold();hold();hold();calibrate();
++ ms=UINT32_MAX-15000U;app()->runtime.old_ms=ms;app()->line.sample_ms=ms;app()->power.sample_ms=ms;
++ enable();press_key();for(unsigned i=0;i<3500&&app()->runtime.state==RUNNING;i++)step_route();
++ assert(app()->runtime.state==DONE && signals==5 && app()->route.elapsed_ms<40000U);
++ puts("PASS: actual CarApp scheduler Task3 GPIO selection/start, AC->CB->BD->DA settled completion, five signals, zero inner PI, no reverse commands, old heading gate isolation, STOP/OFF/RX/MPU/ADC/LOW/FAST/REV/STALL/GAP, line/turn/time guards, restart, telemetry congestion, encoder/millis wrap. Simulation only.");
++ return 0;
++}
+--- a/tools/tests/test_task2.c
++++ b/tools/tests/test_task2.c
+@@ -273,7 +273,7 @@
+  /* Modes cycle 1 -> half -> 2 -> 1; reboot is still task 1. */
+  setup();hold();assert(CarApp_TestContext()->button.selected_motion==MOVE_LINE);hold();assert(CarApp_TestContext()->button.selected_motion==MOVE_TASK2);
+  for(int i=0;i<200;i++)step(10,0,0);assert(CarApp_TestContext()->button.selected_motion==MOVE_TASK2&&CarApp_TestContext()->heading.phase==Y_NONE);
+- hold();assert(CarApp_TestContext()->button.selected_motion==MOVE_ROUTE);setup();assert(CarApp_TestContext()->button.selected_motion==MOVE_ROUTE);
++ hold();assert(CarApp_TestContext()->button.selected_motion==MOVE_TASK3);hold();assert(CarApp_TestContext()->button.selected_motion==MOVE_ROUTE);setup();assert(CarApp_TestContext()->button.selected_motion==MOVE_ROUTE);
+  /* Half-circle user's current tuned parameters and independent auto-stop survive. */
+  setup();line_inputs=9;cmd("LF20!");calibrate();enable();press_key();
+  assert(CarApp_TestContext()->route.motion==MOVE_LINE&&CarApp_TestContext()->runtime.state==RUNNING&&CarApp_TestContext()->route.goal==DPT_LINE_MM);
+@@ -359,6 +359,7 @@
+  cmd("STOP!");assert(CarApp_TestContext()->route.elapsed_ms==300);
+  assert(sizeof CarCommand_Banner-1<=160);
+  (void)head;
+- puts("PASS: calibrated1256mm BC endpoint regression; Task2 GPIO-only AB->BC->CD->DA->A four-point signals and final settled stop; white straight/black arc switching gated by distance, debounce and end heading; preserved half-circle settings and task1 regressions; three-mode keys, no BLE required, no premature entry/false arc loss endpoint; bounded missing edges, STOP/OFF/RX/IMU/FAST/GAP/LOW/ADC/STALL/REV/timeout protections, restart/held-key suppression, OLED limits and time wrap. Simulation is not field acceptance.");
++ puts("PASS: calibrated1256mm BC endpoint regression; Task2 GPIO-only AB->BC->CD->DA->A four-point signals and final settled stop; white straight/black arc switching gated by distance, debounce and end heading; preserved half-circle settings and task1 regressions; four-mode keys, no BLE required, no premature entry/false arc loss endpoint; bounded missing edges, STOP/OFF/RX/IMU/FAST/GAP/LOW/ADC/STALL/REV/timeout protections, restart/held-key suppression, OLED limits and time wrap. Simulation is not field acceptance.");
+  printf("TRACE hash=%016llx events=%llu\n",(unsigned long long)trace_hash,(unsigned long long)trace_events);
+-}
++ return 0;
++}
+--- a/.eide/eide.yml
++++ b/.eide/eide.yml
+@@ -20,6 +20,8 @@
+         - path: Core/Src/car_pi.c
+         - path: Core/Src/car_power.c
+         - path: Core/Src/car_route.c
++        - path: Core/Src/car_task3.c
++        - path: Core/Src/car_task3_port.c
+         - path: Core/Src/car_signal.c
+         - path: Core/Src/car_ui.c
+         - path: Core/Src/car_wheel.c
+@@ -51,6 +53,8 @@
+       - Core/Src/car_pi.c
+       - Core/Src/car_power.c
+       - Core/Src/car_route.c
++      - Core/Src/car_task3.c
++      - Core/Src/car_task3_port.c
+       - Core/Src/car_signal.c
+       - Core/Src/car_ui.c
+       - Core/Src/car_wheel.c
+@@ -86,7 +90,7 @@
+             $outputTaskExcludes:
+               - .bin
+             LD_FLAGS: ""
+-            LIB_FLAGS: ""
++            LIB_FLAGS: "-lm"
+             output-format: elf
+             remove-unused-input-sections: true
+         scatterFilePath: STM32F103RCTX_FLASH.ld
+@@ -136,6 +140,8 @@
+       - Core/Src/car_pi.c
+       - Core/Src/car_power.c
+       - Core/Src/car_route.c
++      - Core/Src/car_task3.c
++      - Core/Src/car_task3_port.c
+       - Core/Src/car_signal.c
+       - Core/Src/car_ui.c
+       - Core/Src/car_wheel.c
+@@ -171,7 +177,7 @@
+             $outputTaskExcludes:
+               - .bin
+             LD_FLAGS: ""
+-            LIB_FLAGS: ""
++            LIB_FLAGS: "-lm"
+             output-format: elf
+             remove-unused-input-sections: true
+         scatterFilePath: STM32F103RCTX_FLASH.ld

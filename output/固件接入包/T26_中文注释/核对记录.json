@@ -1,0 +1,9 @@
+{
+  "base_git_commit": "cc6c874",
+  "changed_files": 34,
+  "translated_comments": 98,
+  "comments_only": true,
+  "non_comment_tokens_identical": true,
+  "git_diff_check_pass": true,
+  "new_tests_or_firmware_changes": false
+}

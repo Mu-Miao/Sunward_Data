@@ -1,0 +1,10 @@
+{
+  "backup": "/Users/mzh/Desktop/车车/output/固件备份/Sunward_双轮接入前备份_2026-10-08_6jwjipiv",
+  "dual_module": [
+    "/Users/mzh/STM32Cube/Sunward/Core/Src/dual_pi_test.c"
+  ],
+  "duration_ms": 3000,
+  "target_mmps": 60,
+  "rebuild_returncode": 0,
+  "hardware_downloaded": false
+}

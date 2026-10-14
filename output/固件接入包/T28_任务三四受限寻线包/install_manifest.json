@@ -1,0 +1,13 @@
+{
+  "Core/Inc/car_config.h": "21b66067122fecd0c855f1e9038232b9cf59cca0bde790c724144b5790f4c388",
+  "Core/Inc/car_task3.h": "bef4b4bf01ea3d4396d3c9a437b27450dc4905ad89384681b85e351d51cc6e9e",
+  "Core/Inc/car_task4.h": "4e84e7818ea5d3954cea82eb8ece7a3d10e19944093b7ac2b73ef14a1da11f23",
+  "Core/Src/car_task3.c": "19cf618e8b1e3b7f5cdd62bbac2322d34a52179d3d9545e6b686a94b9fa287ce",
+  "Core/Src/car_task3_port.c": "7c569ed58d82dfa2576604be4c3d8088036dfaed01b00cb3a2377ae664faffff",
+  "Core/Src/car_ui.c": "f878df07723d2245d7745d9ffb329a02e4b1bd5e103ea9807cb5e67320fce9bc",
+  "Core/Src/car_route.c": "59494507e3932aaccf727d9ddb52455a3bd235c624f23b65397fbff9aa9be6ba",
+  "tools/tests/run_tests.py": "2d24a5ca8e323e4b004c57e40d6f56267c2359dd9e83c298f69eea0583cb2d83",
+  "tools/tests/test_task4.c": "9c0f9344747b8e7d5db391de18673acb412f75133ad58bcfdc9d7b48ec562069",
+  "tools/tests/test_task3.c": "810d50653409730f64cab1fbe27f446a91069a3f3fce561d250ac1a0be12efa6",
+  "tools/tests/test_seek.c": "89ba4ee6142d49fc2b769f12133c80e6b6a7f48dc3393e26a3eb1ddddc698809"
+}

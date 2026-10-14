@@ -1,0 +1,320 @@
+--- a/Core/Inc/car_config.h
++++ b/Core/Inc/car_config.h
+@@ -88,6 +88,15 @@
+ #define DPT_TASK3_CAPTURE_TIMEOUT_MS 2000U
+ /* 任务四沿用任务三的几何和速度参数；以下时限用于故障保护。 */
+ #define DPT_TASK4_LAP_WATCHDOG_MS 80000U
++/* 任务四短暂失线时保持零输出，最多等待 200 毫秒；恢复需连续有效 30 毫秒。
++ * 下列数值为待实车验证的容错初值，不改变任务三和全局 PI 标定。 */
++#define DPT_TASK4_LOST_MS 200U
++#define DPT_TASK4_RECOVERY_MS 30U
++#define DPT_TASK4_RESUME_MMPS 50.0f
++#define DPT_TASK4_RESUME_ACCEL_MMPS2 100.0f
++#define DPT_TASK4_EDGE_MMPS 120.0f
++#define DPT_TASK4_TURN_SLOW_DEG 15.0f
++#define DPT_TASK4_TURN_MIN_MMPS 35.0f
+ #define DPT_TASK4_LAPS 4U
+ #define DPT_TASK4_TIMEOUT_MS 160000U
+ #endif
+--- a/Core/Inc/car_task3.h
++++ b/Core/Inc/car_task3.h
+@@ -24,6 +24,7 @@
+     float diagonal_tolerance_deg, arc_tolerance_deg, align_tolerance_deg;
+     uint32_t deadline_ms, settle_ms, brake_timeout_ms, align_timeout_ms;
+     uint32_t capture_timeout_ms, debounce_ms, lost_ms, sample_max_age_ms;
++    uint32_t recovery_ms; /* 0 沿用任务三；非零时失线恢复必须连续有效，原失线预算不重置。 */
+ } CarTask3Config;
+ 
+ typedef struct {
+@@ -50,6 +51,8 @@
+     uint8_t edge_seen, settled_seen, lost_seen, pending_start_signal;
+     uint32_t start_ms, phase_ms, edge_ms, settled_ms, lost_start_ms;
+     uint32_t previous_ms, elapsed_ms, start_settle_ms;
++    uint8_t recovery_seen;
++    uint32_t recovery_start_ms;
+     float diagonal_mm, diagonal_angle_deg, start_heading_deg;
+     float leg_start_mm, phase_start_mm;
+ } CarTask3;
+--- a/Core/Inc/car_task4.h
++++ b/Core/Inc/car_task4.h
+@@ -5,9 +5,11 @@
+ typedef struct {
+     uint8_t active, completed_laps; /* 运行标志、已在 A 点停稳完成的圈数。 */
+     uint32_t start_ms, elapsed_ms; /* 四圈总起始时刻及累计用时，单位毫秒；圈间不清零。 */
++    uint8_t resume_pending, resume_active;
++    uint32_t resume_ms; /* 失线恢复加速的独立起点，不重置阶段、里程及总超时。 */
+     float ac_reference_deg; /* 首次启动保存的 AC 参考角，四圈始终共用。 */
+ } CarTask4;
+-/* 仅管理四圈流程，单圈控制继续复用 T20 任务三核心。 */
++/* 管理四圈流程及恢复加速；复用单圈核心，任务四单独启用失线确认。 */
+ CarTask3Config CarTask4_Config(void);
+ int CarTask4_Start(CarTask4 *task, CarTask3 *lap,
+     const CarTask3Config *config, const CarTask3Input *input);
+--- a/Core/Src/car_line.c
++++ b/Core/Src/car_line.c
+@@ -54,6 +54,11 @@
+         return;
+     }
+     app->line.invalid_seen = 0U;
++    /* 仅任务四：探头明显偏到边缘时降速，保留原纠偏方向和差速比例。 */
++    if (app->route.motion == MOVE_TASK4 &&
++        (app->line.error >= 2.0f || app->line.error <= -2.0f) && base > DPT_TASK4_EDGE_MMPS)
++        base = DPT_TASK4_EDGE_MMPS;
++    if (app->route.motion == MOVE_TASK4) app->route.base = base;
+     app->line.diff = DPT_LINE_GAIN * app->line.error * base / DPT_LINE_CRUISE_MMPS;
+     float limit = DPT_LINE_MAX_DIFF * base / DPT_LINE_CRUISE_MMPS;
+     if (app->line.diff > limit) app->line.diff = limit;
+--- a/Core/Src/car_route.c
++++ b/Core/Src/car_route.c
+@@ -241,7 +241,8 @@
+             app->signal.ms = now;
+             CarSignal_Set(app, 1); /* 最终在 A 点停稳后触发一次声光提示。 */
+         } else CarTask3Port_Apply(app, &output, now);
+-        if (app->runtime.state == RUNNING && app->route.task3.phase == T3_ARC && input.line_valid) {
++        if (app->runtime.state == RUNNING && app->route.task3.phase == T3_ARC && input.line_valid &&
++            (app->route.motion != MOVE_TASK4 || !app->route.task3.lost_seen)) {
+             app->route.task3_trace.valid_seen = 1U;
+             app->route.task3_trace.lost_seen = 0U; /* 短暂失线恢复后，下一次失线重新建立快照窗口。 */
+             memcpy(app->route.task3_trace.valid_raw, app->line.raw, 4U);
+--- a/Core/Src/car_task3.c
++++ b/Core/Src/car_task3.c
+@@ -34,7 +34,10 @@
+         bounded_time(c->settle_ms) && bounded_time(c->brake_timeout_ms) &&
+         c->brake_timeout_ms > c->settle_ms && bounded_time(c->align_timeout_ms) &&
+         bounded_time(c->capture_timeout_ms) && c->debounce_ms >= 30U && c->debounce_ms <= 100U &&
+-        c->lost_ms >= c->debounce_ms && c->lost_ms <= 100U &&
++        c->lost_ms >= c->debounce_ms &&
++        ((c->recovery_ms == 0U && c->lost_ms <= 100U) ||
++         (c->recovery_ms >= 30U && c->recovery_ms <= 100U &&
++          c->recovery_ms < c->lost_ms && c->lost_ms <= 250U)) &&
+         c->sample_max_age_ms > 0U && c->sample_max_age_ms <= 20U;
+ }
+ static int input_valid(const CarTask3Config *c, const CarTask3Input *i)
+@@ -56,7 +59,7 @@
+     r->phase = p;
+     r->phase_ms = i->now_ms;
+     r->phase_start_mm = i->distance_mm;
+-    r->edge_seen = r->settled_seen = r->lost_seen = 0U;
++    r->edge_seen = r->settled_seen = r->lost_seen = r->recovery_seen = 0U;
+     o->control = T3_HALT;
+     o->reset_controllers = 1U;
+ }
+@@ -186,12 +189,27 @@
+             }
+         } else {
+             stable(r, 0, i->now_ms);
+-            if (!i->line_valid) {
++            int follow = i->line_valid;
++            if (r->lost_seen && r->config.recovery_ms != 0U) {
++                /* 瞬间有效读数不能续期；先检查从第一次失线起算的总预算。 */
++                if ((uint32_t)(i->now_ms - r->lost_start_ms) >= r->config.lost_ms) {
++                    fault(r, T3_LOST);
++                    follow = 0;
++                } else if (follow) {
++                    if (!r->recovery_seen) {
++                        r->recovery_seen = 1U;
++                        r->recovery_start_ms = i->now_ms;
++                    }
++                    follow = (uint32_t)(i->now_ms - r->recovery_start_ms) >= r->config.recovery_ms;
++                }
++            }
++            if (!follow) {
+                 o->reset_controllers = 1U;
++                if (!i->line_valid) r->recovery_seen = 0U;
+                 if (!r->lost_seen) { r->lost_seen = 1U; r->lost_start_ms = i->now_ms; }
+                 else if ((uint32_t)(i->now_ms - r->lost_start_ms) >= r->config.lost_ms) fault(r, T3_LOST);
+             } else {
+-                r->lost_seen = 0U;
++                r->lost_seen = r->recovery_seen = 0U;
+                 o->control = T3_FOLLOW_LINE;
+                 o->base_mmps = speed(r, i, r->config.arc_mmps, r->config.arc_mm - progress, r->config.arc_acceleration_mmps2);
+             }
+--- a/Core/Src/car_task3_port.c
++++ b/Core/Src/car_task3_port.c
+@@ -47,6 +47,16 @@
+         app->heading.error = CarMath_WrapDegrees(o->heading_deg - app->heading.angle);
+         app->route.targets[LEFT] = o->left_mmps;
+         app->route.targets[RIGHT] = o->right_mmps;
++        /* 任务四接近目标角时降低外轮速度，减少不同车架惯性导致的过冲。
++           仍按陀螺仪确认角度，并保留原时间、距离及内轮零目标保护。 */
++        if (app->route.motion == MOVE_TASK4) {
++            float scale = fminf(1.0f, fabsf(app->heading.error) / DPT_TASK4_TURN_SLOW_DEG);
++            for (unsigned w = 0; w < 2U; ++w)
++                if (app->route.targets[w] > 0.0f)
++                    app->route.targets[w] = fminf(app->route.targets[w],
++                        fmaxf(DPT_TASK4_TURN_MIN_MMPS, app->route.targets[w] * scale));
++            app->route.base = (app->route.targets[LEFT] + app->route.targets[RIGHT]) * 0.5f;
++        }
+     } else if (o->control == T3_FOLLOW_LINE) {
+         CarLine_SetTargets(app, now, o->base_mmps);
+     }
+--- a/Core/Src/car_task4.c
++++ b/Core/Src/car_task4.c
+@@ -10,6 +10,8 @@
+     /* 外层统一执行四圈总计 160 秒的超时保护。
+        不将任务三的 40 秒比赛时限单独施加到任务四每一圈。 */
+     config.deadline_ms = DPT_TASK4_LAP_WATCHDOG_MS;
++    config.lost_ms = DPT_TASK4_LOST_MS;
++    config.recovery_ms = DPT_TASK4_RECOVERY_MS;
+     return config;
+ }
+ 
+@@ -48,6 +50,18 @@
+     }
+     CarTask3_Update(lap, input, output);
+     if (lap->phase == T3_FAULT) { task->active = 0U; return; }
++    if (lap->phase == T3_ARC) {
++        if (output->control == T3_HALT) {
++            task->resume_pending = 1U;
++            task->resume_active = 0U;
++        } else if (output->control == T3_FOLLOW_LINE && task->resume_pending) {
++            if (!task->resume_active) { task->resume_active = 1U; task->resume_ms = input->now_ms; }
++            float ramp = DPT_TASK4_RESUME_MMPS + DPT_TASK4_RESUME_ACCEL_MMPS2 *
++                (float)(uint32_t)(input->now_ms - task->resume_ms) / 1000.0f;
++            if (output->base_mmps > ramp) output->base_mmps = ramp;
++            if (ramp >= lap->config.arc_mmps) task->resume_pending = task->resume_active = 0U;
++        }
++    } else task->resume_pending = task->resume_active = 0U;
+     if (lap->phase != T3_DONE) return;
+     /* T20 单圈核心仅在 A 点两轮停稳后报告完成，此时圈数只增加一次。 */
+     ++task->completed_laps;
+--- a/Core/Src/car_ui.c
++++ b/Core/Src/car_ui.c
+@@ -10,7 +10,7 @@
+         static const char *const states[] = {"IDLE", "RUN", "DONE", "OFF", "LOW",
+             "ADC", "GAP", "REV", "FAST", "STALL", "UART", "STOP", "YAW", "BRAKE", "TIMEOUT", "SETTLE", "LOST", "LINE"};
+         const char *title = "TASK 1 A->B";
+-        if (app->route.motion == MOVE_TASK4 || (app->route.motion == MOVE_NONE && app->button.selected_motion == MOVE_TASK4)) title = "TASK 4 REBUILD V1";
++        if (app->route.motion == MOVE_TASK4 || (app->route.motion == MOVE_NONE && app->button.selected_motion == MOVE_TASK4)) title = "TASK 4 ROBUST V1";
+         else if (app->route.motion == MOVE_TASK3 || (app->route.motion == MOVE_NONE && app->button.selected_motion == MOVE_TASK3)) title = "TASK 3 CAP V2";
+         else if (app->route.motion == MOVE_TASK2 || (app->route.motion == MOVE_NONE && app->button.selected_motion == MOVE_TASK2)) title = "TASK 2 ONE LAP";
+         else if (app->route.motion == MOVE_LINE || (app->route.motion == MOVE_NONE && app->button.selected_motion == MOVE_LINE)) title = "TEST HALF ARC";
+--- a/tools/tests/test_task4.c
++++ b/tools/tests/test_task4.c
+@@ -8,7 +8,7 @@
+  setup();line_inputs=15;hold();hold();hold();hold();
+  assert(app()->button.selected_motion==MOVE_TASK4 && app()->runtime.state!=RUNNING);
+  assert(app()->route.goal>20280 && app()->route.goal<20300);
+- assert(strcmp(oled_lines[0],"TASK 4 REBUILD V1")==0);
++ assert(strcmp(oled_lines[0],"TASK 4 ROBUST V1")==0);
+ }
+ static void task4_start(void)
+ {
+@@ -62,8 +62,100 @@
+      !(app()->route.task4.completed_laps==lap && app()->route.task3.phase==phase);k++)step_route();
+  assert(app()->runtime.state==RUNNING && app()->route.task4.completed_laps==lap && app()->route.task3.phase==phase);
+ }
++static void robust_arc(void)
++{
++ task4_start();until_lap_phase(0,T3_ARC);
++ app()->route.task3.phase_ms=ms-2000U;
++ app()->route.task4.resume_pending=app()->route.task4.resume_active=0;
++ line_inputs=9;step(10,177,176);
++ assert(app()->route.base==200.0f);
++}
++static void robust_regression(void)
++{
++ CarTask3Config c=CarTask4_Config();
++ assert(c.lost_ms==200U && c.recovery_ms==30U);
++ assert(CarRoute_Task3Config().lost_ms==100U && CarRoute_Task3Config().recovery_ms==0U);
++ c.recovery_ms=29;assert(!CarTask3_ConfigValid(&c));
++ c=CarTask4_Config();c.recovery_ms=c.lost_ms;assert(!CarTask3_ConfigValid(&c));
++ c=CarTask4_Config();c.lost_ms=251;assert(!CarTask3_ConfigValid(&c));
++ c=CarRoute_Task3Config();c.lost_ms=101;assert(!CarTask3_ConfigValid(&c));
++ /* A dropout longer than the old 100ms gate can recover, always stopped until confirmed. */
++ robust_arc();line_inputs=15;
++ for(unsigned n=0;n<12;n++) {step(10,0,0);assert(app()->runtime.state==RUNNING && a==0 && b==0);}
++ uint32_t loss=app()->route.task3_trace.lost_ms,start=app()->route.start_ms;
++ float origin=app()->route.task3.leg_start_mm,reference=app()->route.task4.ac_reference_deg;
++ line_inputs=9;
++ for(unsigned n=0;n<3;n++) {
++  step(10,0,0);assert(a==0 && b==0 && app()->route.task3.lost_seen);
++  assert(app()->route.task3_trace.lost_seen && app()->route.task3_trace.lost_ms==loss);
++ }
++ step(10,0,0);
++ assert(app()->runtime.state==RUNNING && !app()->route.task3.lost_seen && !app()->route.task3_trace.lost_seen);
++ assert(fabsf(app()->route.base-50)<.01f && a>0 && b<0);
++ for(unsigned n=0;n<6;n++)step(10,177,176);
++ assert(fabsf(app()->route.base-56)<.01f && app()->route.task4.resume_active);
++ assert(app()->route.start_ms==start && app()->route.task3.leg_start_mm==origin);
++ assert(app()->route.task4.ac_reference_deg==reference && app()->route.task4.completed_laps==0);
++ /* Repeated one-frame valid glitches cannot extend the original loss deadline. */
++ robust_arc();line_inputs=15;step(10,0,0);loss=app()->route.task3_trace.lost_ms;
++ for(unsigned n=0;n<19;n++) {
++  line_inputs=n%2?15:9;step(10,0,0);
++  assert(app()->runtime.state==RUNNING && a==0 && b==0 && app()->route.task3_trace.lost_ms==loss);
++ }
++ line_inputs=9;step(10,0,0);
++ assert(app()->runtime.state==LINE_LOST && app()->route.task3.fault==T3_LOST && a==0 && b==0);
++ for(unsigned n=0;n<8;n++)step(10,0,0);
++ assert(app()->runtime.state==LINE_LOST && app()->route.task4.completed_laps==0 && a==0 && b==0);
++ /* Deadline wins even if the first stable confirmation arrives at exactly 200ms. */
++ robust_arc();line_inputs=15;for(unsigned n=0;n<17;n++)step(10,0,0);
++ line_inputs=9;for(unsigned n=0;n<4;n++)step(10,0,0);
++ assert(app()->runtime.state==LINE_LOST && a==0 && b==0);
++ /* All-black and separated-black noise remain invalid; no blind search. */
++ for(unsigned pattern=0;pattern<2;pattern++) {
++  robust_arc();line_inputs=pattern?5:0;
++  for(unsigned n=0;n<21;n++){step(10,0,0);assert(a==0 && b==0);}
++  assert(app()->runtime.state==LINE_LOST && app()->route.task3.fault==T3_LOST);
++ }
++ /* Either outer probe reduces speed and retains the original correction direction. */
++ for(unsigned side=0;side<2;side++) {
++  robust_arc();line_inputs=side?7:14;step(10,177,176);
++  assert(fabsf(app()->route.base-120)<.01f);
++  assert(app()->route.targets[0]>0 && app()->route.targets[1]>0);
++  assert(side?app()->route.targets[0]<app()->route.targets[1]:app()->route.targets[0]>app()->route.targets[1]);
++  line_inputs=9;step(10,177,176);assert(app()->route.base==200);
++ }
++ /* Heading-dependent turn speed; zero inner target and no reversed wheel. */
++ task4_start();CarTask3Output o={.control=T3_TURN_FORWARD,.heading_deg=0,.left_mmps=80};
++ app()->heading.angle=30;CarTask3Port_Apply(app(),&o,ms);assert(app()->route.targets[0]==80 && app()->route.targets[1]==0);
++ app()->heading.angle=7.5f;CarTask3Port_Apply(app(),&o,ms);assert(app()->route.targets[0]==40 && app()->route.targets[1]==0);
++ app()->heading.angle=4;CarTask3Port_Apply(app(),&o,ms);assert(app()->route.targets[0]==35 && app()->route.targets[1]==0);
++ /* Protection overrides the recovery wait; no automatic restart. */
++ for(unsigned fault=0;fault<6;fault++) {
++  robust_arc();line_inputs=15;step(10,0,0);
++  switch(fault) {
++   case 0:off=1;break;
++   case 1:queue(0,"STOP!");break;
++   case 2:imu_fail=1;break;
++   case 3:adc_fail=1;app()->power.sample_ms=ms-100;break;
++   case 4:faults[0]=1;break;
++   case 5:app()->route.start_ms=ms-160000;break;
++  }
++  step(10,0,0);assert(app()->runtime.state!=RUNNING && a==0 && b==0 && !app()->route.task4.active);
++ }
++ /* Recovery timing across millis overflow, with exact deadline and existing budgets. */
++ c=CarTask4_Config();CarTask3 t={0};CarTask3Output out;
++ CarTask3Input in={.now_ms=UINT32_MAX-100U,.heading_ready=1,.enabled=1};
++ assert(CarTask3_Start(&t,&c,&in));t.phase=T3_ARC;t.leg=1;t.pending_start_signal=0;
++ CarTask3_Update(&t,&in,&out);assert(t.lost_seen && out.control==T3_HALT);
++ for(unsigned n=0;n<13;n++){in.now_ms+=10;CarTask3_Update(&t,&in,&out);assert(out.control==T3_HALT);}
++ in.line_valid=1;in.black_count=2;
++ for(unsigned n=0;n<3;n++){in.now_ms+=10;CarTask3_Update(&t,&in,&out);assert(out.control==T3_HALT);}
++ in.now_ms+=10;CarTask3_Update(&t,&in,&out);assert(out.control==T3_FOLLOW_LINE && t.phase==T3_ARC);
++ puts("PASS: Task4 bounded stationary recovery/stable debounce/ramp, original deadline under chatter, exact deadline, invalid patterns, preserved loss snapshot, outer-probe slowdown, turn slowdown, protection priority and recovery millis wrap.");
++}
+ int main(void)
+ {
++ robust_regression();
+  CarTask3Config c=CarTask4_Config();assert(CarTask3_ConfigValid(&c) && c.deadline_ms==80000U);
+  assert(CarRoute_Task3Config().deadline_ms==40000U);
+  task4_select();hold();assert(app()->button.selected_motion==MOVE_ROUTE);
+@@ -111,14 +203,14 @@
+    case 4:faults[0]=1;step(10,0,0);assert(app()->runtime.state==UART_BAD);break;
+    case 5:step(30,0,0);assert(app()->runtime.state==GAP);break;
+    case 6:step(10,2000,0);assert(app()->runtime.state==FAST);break;
+-   case 7:line_inputs=15;for(unsigned n=0;n<11;n++)step(10,0,0);assert(app()->runtime.state==LINE_LOST && app()->route.task3.fault==T3_LOST);break;
++   case 7:line_inputs=15;for(unsigned n=0;n<21;n++)step(10,0,0);assert(app()->runtime.state==LINE_LOST && app()->route.task3.fault==T3_LOST);break;
+   }
+   assert(app()->route.task4.completed_laps==1 && app()->route.task3.phase==T3_FAULT && a==0 && b==0);
+   TestState stopped=app()->runtime.state;for(unsigned j=0;j<30;j++)step(10,0,0);
+   assert(app()->runtime.state==stopped && app()->route.task4.completed_laps==1 && a==0 && b==0);
+  }
+  /* Fresh restart clears count/snapshot and makes the initial AB->AC turn again. */
+- task4_start();until_lap_phase(1,T3_ARC);line_inputs=15;for(unsigned k=0;k<11;k++)step(10,0,0);
++ task4_start();until_lap_phase(1,T3_ARC);line_inputs=15;for(unsigned k=0;k<21;k++)step(10,0,0);
+  assert(app()->route.task3_trace.lost_seen);queue(0,"TASK4!");step(10,0,0);
+  assert(app()->runtime.state==RUNNING && app()->route.task4.completed_laps==0 && app()->route.task3.phase==T3_START_ALIGN && !app()->route.task3_trace.lost_seen);
+  /* Busy press cannot change task/queue a next lap. */

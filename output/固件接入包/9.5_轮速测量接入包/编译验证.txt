@@ -1,0 +1,36 @@
+ARM全工程编译与链接通过。
+测试输出：/private/tmp/sunward-speed-check-sfwrfb6l/Sunward_speed_check.elf
+仅临时main按指南修改；未修改Sunward，未下载到硬件。
+新轮速模块无编译警告。
+原main诊断函数未使用警告：
+/private/tmp/sunward-speed-check-sfwrfb6l/main_speed_check.c:330:12: warning: 'Lab_PIForward' defined but not used [-Wunused-function]
+  330 | static int Lab_PIForward(LabPI *pi, float target_mps, float measured_mps,
+      |            ^~~~~~~~~~~~~
+/private/tmp/sunward-speed-check-sfwrfb6l/main_speed_check.c:317:14: warning: 'Lab_WheelSpeed' defined but not used [-Wunused-function]
+  317 | static float Lab_WheelSpeed(int32_t delta, int forward_sign,
+      |              ^~~~~~~~~~~~~~
+/private/tmp/sunward-speed-check-sfwrfb6l/main_speed_check.c:294:13: warning: 'Lab_PrintMPURaw' defined but not used [-Wunused-function]
+  294 | static void Lab_PrintMPURaw(void)
+      |             ^~~~~~~~~~~~~~~
+/private/tmp/sunward-speed-check-sfwrfb6l/main_speed_check.c:277:13: warning: 'Lab_PrintBatteryRaw' defined but not used [-Wunused-function]
+  277 | static void Lab_PrintBatteryRaw(void)
+      |             ^~~~~~~~~~~~~~~~~~~
+/private/tmp/sunward-speed-check-sfwrfb6l/main_speed_check.c:256:13: warning: 'Lab_PrintTickRate' defined but not used [-Wunused-function]
+  256 | static void Lab_PrintTickRate(void)
+      |             ^~~~~~~~~~~~~~~~~
+/private/tmp/sunward-speed-check-sfwrfb6l/main_speed_check.c:235:13: warning: 'Lab_PrintEncoders' defined but not used [-Wunused-function]
+  235 | static void Lab_PrintEncoders(void)
+      |             ^~~~~~~~~~~~~~~~~
+/private/tmp/sunward-speed-check-sfwrfb6l/main_speed_check.c:204:13: warning: 'Lab_MotorTestOnce' defined but not used [-Wunused-function]
+  204 | static void Lab_MotorTestOnce(void)
+      |             ^~~~~~~~~~~~~~~~~
+/private/tmp/sunward-speed-check-sfwrfb6l/main_speed_check.c:148:13: warning: 'Lab_PrintLine' defined but not used [-Wunused-function]
+  148 | static void Lab_PrintLine(void)
+      |             ^~~~~~~~~~~~~
+/private/tmp/sunward-speed-check-sfwrfb6l/main_speed_check.c:60:17: warning: 'line_log_ms' defined but not used [-Wunused-variable]
+   60 | static uint32_t line_log_ms = 0U;
+      |                 ^~~~~~~~~~~
+
+主机模拟检查通过：前进/反转符号、静止输出、编码器16位回绕、节拍计数32位回绕、DWT时钟32位回绕、20ms实际间隔换算与MISS计数。
+测试记录：/private/tmp/speed-host-check-ujlptyad/测试结果.txt
+尚未在用户小车上下载或测量；真实调度、UART耗时和轮速精度等待实物日志。

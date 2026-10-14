@@ -1,0 +1,293 @@
+--- a/Core/Inc/car_config.h
++++ b/Core/Inc/car_config.h
+@@ -78,6 +78,8 @@
+ #define DPT_TASK3_APPROACH_MM 100.0f
+ #define DPT_TASK3_MIN_MMPS 60.0f /* 捕获黑线阶段仍使用独立的 50 毫米/秒速度。 */
+ #define DPT_TASK3_TURN_MMPS 80.0f
++/* 任务三、四共用：原地转向少转 5 度，A/B 起步后补齐斜线航向，C/D 低速捕获黑线。 */
++#define DPT_TASK3_TURN_RELIEF_DEG 5.0f
+ #define DPT_TASK3_CAPTURE_MMPS 50.0f
+ #define DPT_TASK3_TIMEOUT_MS 40000U
+ #define DPT_TASK3_ENTRY_WINDOW_MM 120.0f
+--- a/Core/Inc/car_task3.h
++++ b/Core/Inc/car_task3.h
+@@ -19,6 +19,7 @@
+     float diagonal_mmps, arc_mmps, start_mmps, acceleration_mmps2;
+     float arc_acceleration_mmps2; /* 半圆加速度，与斜线段独立配置。 */
+     float turn_mmps, capture_mmps;
++    float turn_relief_deg; /* 原地对正留量；不改变固定 AC 参考、斜线目标和赛道几何。 */
+     float entry_window_mm, exit_window_mm, turn_travel_limit_mm;
+     float capture_limit_mm, approach_mm, minimum_mmps;
+     float diagonal_tolerance_deg, arc_tolerance_deg, align_tolerance_deg;
+--- a/Core/Src/car_route.c
++++ b/Core/Src/car_route.c
+@@ -14,6 +14,7 @@
+     c.start_mmps = DPT_TASK3_START_MMPS; c.acceleration_mmps2 = DPT_TASK3_ACCEL_MMPS2;
+     c.arc_acceleration_mmps2 = DPT_TASK3_ARC_ACCEL_MMPS2;
+     c.approach_mm = DPT_TASK3_APPROACH_MM; c.minimum_mmps = DPT_TASK3_MIN_MMPS;
++    c.turn_relief_deg = DPT_TASK3_TURN_RELIEF_DEG;
+     c.turn_mmps = DPT_TASK3_TURN_MMPS; c.capture_mmps = DPT_TASK3_CAPTURE_MMPS;
+     c.deadline_ms = DPT_TASK3_TIMEOUT_MS;
+     c.entry_window_mm = DPT_TASK3_ENTRY_WINDOW_MM; c.exit_window_mm = DPT_TASK3_EXIT_WINDOW_MM;
+--- a/Core/Src/car_task3.c
++++ b/Core/Src/car_task3.c
+@@ -12,7 +12,8 @@
+ static int bounded_time(uint32_t t) { return t > 0U && t <= 80000U; }
+ static int config_valid(const CarTask3Config *c)
+ {
+-    if (c->start_from_ab > 1U) return 0;
++    if (c->start_from_ab > 1U || !isfinite(c->turn_relief_deg) ||
++        c->turn_relief_deg < 0.0f || c->turn_relief_deg > 10.0f) return 0;
+     if (c->white_seek_ms != 0U &&
+         (c->white_seek_ms < 30U || c->white_seek_ms > 300U ||
+          !positive(c->white_seek_mm) || c->white_seek_mm > 20.0f ||
+@@ -33,7 +34,9 @@
+         !positive(c->diagonal_tolerance_deg) || !positive(c->arc_tolerance_deg) ||
+         !positive(c->align_tolerance_deg)) return 0;
+     float diagonal = hypotf(c->span_mm, 2.0f * c->radius_mm);
++    float angle = atan2f(2.0f * c->radius_mm, c->span_mm) * 57.2957795131f;
+     return isfinite(diagonal) && diagonal < 10000.0f &&
++        (c->turn_relief_deg == 0.0f || c->turn_relief_deg < angle) &&
+         c->entry_window_mm < diagonal * 0.5f && c->exit_window_mm < c->arc_mm * 0.5f &&
+         c->approach_mm < diagonal && c->diagonal_mmps <= 250.0f && c->arc_mmps <= 250.0f &&
+         c->start_mmps <= c->diagonal_mmps && c->start_mmps <= c->arc_mmps &&
+@@ -90,9 +93,17 @@
+     /* CB 从朝 B 转到朝 A，向左转约 180 度；DA 从朝 A 转到朝 B，向右转约 180 度。 */
+     return wrap(east + ((r->leg == 1U ? end : !end) ? 180.0f : 0.0f));
+ }
++static float start_align_heading(const CarTask3 *r)
++{
++    /* A 点右转少转，留量落在 AB 和真实 AC 方向之间；AC 参考仍保持原值。 */
++    return wrap(r->start_heading_deg + r->config.turn_relief_deg);
++}
+ static float align_heading(const CarTask3 *r)
+ {
+-    return (r->leg & 1U) ? tangent_heading(r, 0) : diagonal_heading(r);
++    float target = (r->leg & 1U) ? tangent_heading(r, 0) : diagonal_heading(r);
++    /* C/B 左转少转，D 右转少转。进入白底斜线后仍保持真实斜线目标。 */
++    float direction = r->leg == 1U || r->leg == 2U ? -1.0f : 1.0f;
++    return wrap(target + direction * r->config.turn_relief_deg);
+ }
+ static float speed(const CarTask3 *r, const CarTask3Input *i, float cruise, float remaining, float acceleration)
+ {
+@@ -249,7 +260,8 @@
+             }
+         }
+     } else if (r->phase == T3_VERTEX_SEEK) {
+-        float tangent = wrap(r->start_heading_deg + r->diagonal_angle_deg + (r->leg == 2U ? 180.0f : 0.0f));
++        float tangent = wrap(r->start_heading_deg + r->diagonal_angle_deg + (r->leg == 2U ? 180.0f : 0.0f) +
++            (r->leg == 0U ? -1.0f : 1.0f) * r->config.turn_relief_deg);
+         float error = wrap(tangent - i->yaw_deg);
+         if (progress > r->diagonal_mm + r->config.entry_window_mm ||
+             phase_travel >= r->config.vertex_seek_mm ||
+@@ -309,7 +321,7 @@
+         else if ((uint32_t)(i->now_ms - (r->phase == T3_START_SETTLE ? r->start_settle_ms : r->phase_ms)) >= r->config.brake_timeout_ms)
+             fault(r, T3_SETTLE);
+         else if (r->phase == T3_START_SETTLE &&
+-            fabsf(wrap(r->start_heading_deg - i->yaw_deg)) > r->config.align_tolerance_deg) {
++            fabsf(wrap(start_align_heading(r) - i->yaw_deg)) > r->config.align_tolerance_deg) {
+             /* 重新对正时继续使用本次起始转向的原时间和距离预算。 */
+             r->phase = T3_START_ALIGN;
+             r->settled_seen = r->edge_seen = 0U;
+@@ -332,7 +344,7 @@
+             }
+         } else r->settled_seen = 0U;
+     } else if (r->phase == T3_ALIGN || r->phase == T3_START_ALIGN) {
+-        float target = r->phase == T3_START_ALIGN ? r->start_heading_deg : align_heading(r);
++        float target = r->phase == T3_START_ALIGN ? start_align_heading(r) : align_heading(r);
+         float error = wrap(target - i->yaw_deg);
+         if ((uint32_t)(i->now_ms - r->phase_ms) >= r->config.align_timeout_ms ||
+             phase_travel > r->config.turn_travel_limit_mm) fault(r, T3_TURN);
+@@ -363,7 +375,8 @@
+             o->right_mmps = error > 0.0f ? r->config.turn_mmps : 0.0f;
+         }
+     } else if (r->phase == T3_CAPTURE) {
+-        float target = tangent_heading(r, 0);
++        /* C/D 保持留量方向低速接近，读到有效黑线后由巡线纠偏接管。 */
++        float target = align_heading(r);
+         if ((uint32_t)(i->now_ms - r->phase_ms) >= r->config.capture_timeout_ms ||
+             phase_travel > r->config.capture_limit_mm) fault(r, T3_EDGE);
+         else if (fabsf(wrap(target - i->yaw_deg)) > r->config.diagonal_tolerance_deg) fault(r, T3_HEADING);
+--- a/Core/Src/car_ui.c
++++ b/Core/Src/car_ui.c
+@@ -10,8 +10,8 @@
+         static const char *const states[] = {"IDLE", "RUN", "DONE", "OFF", "LOW",
+             "ADC", "GAP", "REV", "FAST", "STALL", "UART", "STOP", "YAW", "BRAKE", "TIMEOUT", "SETTLE", "LOST", "LINE"};
+         const char *title = "TASK 1 A->B";
+-        if (app->route.motion == MOVE_TASK4 || (app->route.motion == MOVE_NONE && app->button.selected_motion == MOVE_TASK4)) title = "TASK 4 SEEK V1";
+-        else if (app->route.motion == MOVE_TASK3 || (app->route.motion == MOVE_NONE && app->button.selected_motion == MOVE_TASK3)) title = "TASK 3 SEEK V1";
++        if (app->route.motion == MOVE_TASK4 || (app->route.motion == MOVE_NONE && app->button.selected_motion == MOVE_TASK4)) title = "TASK 4 TURN V2";
++        else if (app->route.motion == MOVE_TASK3 || (app->route.motion == MOVE_NONE && app->button.selected_motion == MOVE_TASK3)) title = "TASK 3 TURN V2";
+         else if (app->route.motion == MOVE_TASK2 || (app->route.motion == MOVE_NONE && app->button.selected_motion == MOVE_TASK2)) title = "TASK 2 ONE LAP";
+         else if (app->route.motion == MOVE_LINE || (app->route.motion == MOVE_NONE && app->button.selected_motion == MOVE_LINE)) title = "TEST HALF ARC";
+         else if (app->route.motion == MOVE_DISTANCE) title = "TEST GO20";
+--- a/tools/tests/run_tests.py
++++ b/tools/tests/run_tests.py
+@@ -21,7 +21,7 @@
+ if args.sanitize:
+     flags += ['-fsanitize=address,undefined', '-fno-omit-frame-pointer']
+ with tempfile.TemporaryDirectory(prefix='sunward-host-tests-') as folder:
+-    for suite in ['motion', 'task2', 'task3', 'task4', 'seek']:
++    for suite in ['motion', 'task2', 'task3', 'task4', 'seek', 'turn']:
+         for public in [False, True]:
+             name = suite + ('_car_app' if public else '_legacy_api')
+             binary = str(Path(folder) / name)
+@@ -38,4 +38,4 @@
+                 print(result.stdout + result.stderr, flush=True)
+                 result.check_returncode()
+             print(name + ': ' + result.stdout.strip())
+-print('PASS: motion/task2/task3/task4/seek regressions; CarApp and compatibility APIs; separate module linkage.')
++print('PASS: motion/task2/task3/task4/seek/turn regressions; CarApp and compatibility APIs; separate module linkage.')
+--- a/tools/tests/test_seek.c
++++ b/tools/tests/test_seek.c
+@@ -66,7 +66,7 @@
+  /* White vertex search aligns and settles before advancing, never reverses. */
+  seek_d();
+  /* Use production tangent formula directly for D (initial AB reference +180 degrees). */
+- app()->heading.angle=CarMath_WrapDegrees(app()->route.task3.start_heading_deg+app()->route.task3.diagonal_angle_deg+180);
++ app()->heading.angle=CarMath_WrapDegrees(app()->route.task3.start_heading_deg+app()->route.task3.diagonal_angle_deg+180+app()->route.task3.config.turn_relief_deg);
+  for(unsigned n=0;n<21;n++){step(10,0,0);assert(a==0 && b==0);}
+  assert(app()->route.task3.seek_aligned);step(10,0,0);
+  assert(a>0 && b<0 && app()->route.targets[0]>0 && app()->route.targets[1]>0);
+--- a/tools/tests/test_task3.c
++++ b/tools/tests/test_task3.c
+@@ -41,9 +41,12 @@
+   if(app()->route.targets[0]>0)dl=dr=610;
+   break;
+  case T3_ALIGN: case T3_START_ALIGN: {
+-  float target=t->phase==T3_START_ALIGN?t->start_heading_deg:join_target();
+-  float e=CarMath_WrapDegrees(target-app()->heading.angle);
+-  float turn=fmaxf(-2.0f,fminf(2.0f,e));app()->heading.angle=CarMath_WrapDegrees(app()->heading.angle+turn);
++  /* Plant follows the requested heading only while a wheel target is moving.
++     HALT must not secretly complete the remaining angle during debounce/settle. */
++  if(app()->route.targets[0]>0 || app()->route.targets[1]>0) {
++   float e=CarMath_WrapDegrees(app()->heading.reference-app()->heading.angle);
++   float turn=fmaxf(-2.0f,fminf(2.0f,e));app()->heading.angle=CarMath_WrapDegrees(app()->heading.angle+turn);
++  }
+   if(app()->route.targets[0]>0)dl=177;
+   if(app()->route.targets[1]>0)dr=176;
+   break;
+@@ -119,7 +122,7 @@
+  assert(app()->runtime.state==DONE && app()->route.task3.phase==T3_DONE && signals==5 && a==0 && b==0);
+  assert(app()->route.elapsed_ms<40000 && app()->route.leg==3U && rp[0]==wp[0] && wp[1]==0);
+  for(unsigned i=0;i<50;i++)step(10,0,0);
+- assert(signals==5 && !app()->signal.active && strcmp(oled_lines[0],"TASK 3 SEEK V1")==0);
++ assert(signals==5 && !app()->signal.active && strcmp(oled_lines[0],"TASK 3 TURN V2")==0);
+  assert(strstr(oled_lines[2],"DONE DA T"));for(unsigned i=0;i<4;i++)assert(strlen(oled_lines[i])<=21);
+  /* Task-specific faster schedule, with unchanged half-circle speed/deadline. */
+  assert(CarRoute_Task3Config().diagonal_mmps==240 && CarRoute_Task3Config().arc_mmps==200);
+--- a/tools/tests/test_task4.c
++++ b/tools/tests/test_task4.c
+@@ -8,7 +8,7 @@
+  setup();line_inputs=15;hold();hold();hold();hold();
+  assert(app()->button.selected_motion==MOVE_TASK4 && app()->runtime.state!=RUNNING);
+  assert(app()->route.goal>20280 && app()->route.goal<20300);
+- assert(strcmp(oled_lines[0],"TASK 4 SEEK V1")==0);
++ assert(strcmp(oled_lines[0],"TASK 4 TURN V2")==0);
+ }
+ static void task4_start(void)
+ {
+--- a/tools/tests/test_turn.c
++++ b/tools/tests/test_turn.c
+@@ -0,0 +1,101 @@
++/* Reduced stationary turning: keep geometric references, settle gates, and directional capture. */
++#define CAR_TASK3_TEST_MAIN legacy_task3_main
++#include "test_task3.c"
++#undef CAR_TASK3_TEST_MAIN
++
++static float nominal_heading(unsigned leg)
++{
++ CarTask3 *t=&app()->route.task3;
++ return CarMath_WrapDegrees(t->start_heading_deg+
++  (leg==2?180+2*t->diagonal_angle_deg:t->diagonal_angle_deg+(leg==3?180:0)));
++}
++static void turn_start(unsigned mode)
++{
++ if(mode==3)task3_start();
++ else {setup();line_inputs=15;hold();hold();hold();hold();calibrate();enable();press_key();}
++ assert(app()->runtime.state==RUNNING && app()->route.task3.config.turn_relief_deg==5);
++}
++static void settle_at(float angle,CarTask3Phase aligning,CarTask3Phase settled)
++{
++ app()->heading.angle=angle;
++ for(unsigned n=0;n<10 && app()->route.task3.phase==aligning;n++) {
++  step(10,0,0);assert(a==0 && b==0);
++ }
++ assert(app()->route.task3.phase==settled);
++ for(unsigned n=0;n<30 && app()->route.task3.phase==settled;n++) {
++  step(10,0,0);assert(a==0 && b==0);
++ }
++ assert(app()->runtime.state==RUNNING && app()->route.task3.phase!=settled);
++}
++static void gentle_diagonal(float reference)
++{
++ line_inputs=15;step(10,0,0);
++ float first=fabsf(CarMath_WrapDegrees(reference-app()->heading.angle));
++ assert(first>4.9f && first<5.1f);
++ assert(fabsf(CarMath_WrapDegrees(app()->heading.reference-reference))<.001f);
++ for(unsigned n=0;n<100;n++) {
++  float left=app()->route.targets[0],right=app()->route.targets[1];
++  assert(left>0 && right>0);
++  /* Hypothetical 140mm ideal wheel plant, not a vehicle acceptance model. */
++  app()->heading.angle=CarMath_WrapDegrees(app()->heading.angle+(right-left)*.01f/140*57.2957795131f);
++  int dl=CarMath_Round(left*.01f*DPT_LEFT_CPR/(DPT_CIRC_M*1000));
++  int dr=CarMath_Round(right*.01f*DPT_RIGHT_CPR/(DPT_CIRC_M*1000));
++  step(10,dl,dr);
++  assert(app()->runtime.state==RUNNING && app()->route.task3.phase==T3_DIAGONAL && a>=0 && b<=0);
++ }
++ assert(fabsf(CarMath_WrapDegrees(reference-app()->heading.angle))<first*.5f);
++}
++int main(void)
++{
++ CarTask3Config c=CarRoute_Task3Config();assert(c.turn_relief_deg==5 && CarTask3_ConfigValid(&c));
++ c.turn_relief_deg=NAN;assert(!CarTask3_ConfigValid(&c));
++ c.turn_relief_deg=-1;assert(!CarTask3_ConfigValid(&c));
++ c.turn_relief_deg=11;assert(!CarTask3_ConfigValid(&c));
++ c=CarRoute_Task3Config();c.radius_mm=1;assert(!CarTask3_ConfigValid(&c));
++ c=CarRoute_Task3Config();c.turn_relief_deg=0;assert(CarTask3_ConfigValid(&c));
++ assert(CarTask3_DefaultConfig().turn_relief_deg==0);
++ /* Both modes retain the exact AC reference while stationary A turning ends five degrees early. */
++ for(unsigned mode=3;mode<=4;mode++) {
++  turn_start(mode);float ac=app()->route.task3.start_heading_deg;
++  assert(fabsf(ac+38.65981f)<.001f);
++  float partial=CarMath_WrapDegrees(ac+5);
++  assert(fabsf(CarMath_WrapDegrees(app()->heading.reference-partial))<.001f);
++  settle_at(partial,T3_START_ALIGN,T3_START_SETTLE);
++  assert(app()->route.task3.phase==T3_DIAGONAL && app()->route.task3.start_heading_deg==ac);
++  if(mode==4)assert(app()->route.task4.ac_reference_deg==ac);
++  gentle_diagonal(ac);
++ }
++ /* C left, B left, D right: verify reduced target, halt/debounce/settle and correct next control. */
++ for(unsigned mode=3;mode<=4;mode++)for(unsigned leg=1;leg<=3;leg++) {
++  turn_start(mode);float ac=app()->route.task3.start_heading_deg;
++  for(unsigned n=0;n<3500 && !(app()->route.task3.leg==leg && app()->route.task3.phase==T3_ALIGN);n++) {
++   assert(app()->runtime.state==RUNNING);step_route();
++  }
++  assert(app()->route.task3.leg==leg && app()->route.task3.phase==T3_ALIGN);
++  float nominal=nominal_heading(leg),partial=CarMath_WrapDegrees(nominal+(leg==3?5:-5));
++  step(10,0,0);
++  assert(fabsf(CarMath_WrapDegrees(app()->heading.reference-partial))<.001f);
++  settle_at(partial,T3_ALIGN,T3_ALIGN_SETTLE);
++  assert(app()->route.task3.start_heading_deg==ac);
++  if(mode==4)assert(app()->route.task4.ac_reference_deg==ac);
++  if(leg==2) {
++   assert(app()->route.task3.phase==T3_DIAGONAL);
++   line_inputs=15;step(10,0,0);
++   assert(app()->route.targets[1]>app()->route.targets[0]);
++   gentle_diagonal(nominal);
++  } else {
++   assert(app()->route.task3.phase==T3_CAPTURE);
++   line_inputs=15;step(10,0,0);
++   assert(fabsf(CarMath_WrapDegrees(app()->heading.reference-partial))<.001f);
++   assert(app()->route.targets[0]>0 && app()->route.targets[1]>0);
++   line_inputs=leg==1?13:11;
++   for(unsigned n=0;n<4;n++)step(10,100,100);
++   assert(app()->runtime.state==RUNNING && app()->route.task3.phase==T3_ARC);
++  }
++ }
++ /* Zero relief reproduces full geometric alignment, permitting a simple parameter rollback. */
++ turn_start(3);app()->route.task3.config.turn_relief_deg=0;step(10,0,0);
++ assert(app()->heading.reference==app()->route.task3.start_heading_deg);
++ puts("PASS: Task3/4 A/B/C/D 5-degree reduced stationary targets, fixed AC reference, nominal diagonal feedback convergence, low-speed off-tangent line capture, settle/heading gates, parameter validation and zero-relief fallback. Software only.");
++ return 0;
++}

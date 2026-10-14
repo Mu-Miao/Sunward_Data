@@ -1,0 +1,129 @@
+[ INFO ] start building at 2026-10-12 17:27:22
+
+[ TOOL ] arm-none-eabi-gcc (GNU Tools for STM32 14.3.rel1.20251027-0700) 14.3.1 20250623
+
+[ INFO ] file statistics (rebuild mode)
+
++---------+-----------+-----------+---------------+--------+
+| C Files | Cpp Files | Asm Files | Lib/Obj Files | Totals |
++---------+-----------+-----------+---------------+--------+
+| 49      | 0         | 1         | 0             | 50     |
++---------+-----------+-----------+---------------+--------+
+
+[ INFO ] start compiling ...
+
+>> [  2%] CC 'Core/Src/adc.c'
+>> [  4%] CC 'Core/Src/car_app.c'
+>> [  6%] CC 'Core/Src/car_button.c'
+>> [  8%] CC 'Core/Src/car_command.c'
+>> [ 10%] CC 'Core/Src/car_heading.c'
+>> [ 12%] CC 'Core/Src/car_line.c'
+>> [ 14%] CC 'Core/Src/car_pi.c'
+>> [ 16%] CC 'Core/Src/car_power.c'
+>> [ 18%] CC 'Core/Src/car_route.c'
+>> [ 20%] CC 'Core/Src/car_signal.c'
+>> [ 22%] CC 'Core/Src/car_task3.c'
+>> [ 24%] CC 'Core/Src/car_task3_port.c'
+>> [ 26%] CC 'Core/Src/car_task4.c'
+>> [ 28%] CC 'Core/Src/car_ui.c'
+./Core/Src/car_ui.c: In function 'CarUI_UpdateOLED':
+./Core/Src/car_ui.c:48:68: warning: '%u' directive output may be truncated writing between 1 and 3 bytes into a region of size between 0 and 12 [-Wformat-truncation=]
+   48 |                 (void)snprintf(cal, sizeof cal, "LF%u%u%u%u PRE%u%u%u%u",
+      |                                                                    ^~
+./Core/Src/car_ui.c:48:49: note: directive argument in the range [0, 255]
+   48 |                 (void)snprintf(cal, sizeof cal, "LF%u%u%u%u PRE%u%u%u%u",
+      |                                                 ^~~~~~~~~~~~~~~~~~~~~~~~
+./Core/Src/car_ui.c:48:49: note: directive argument in the range [0, 255]
+./Core/Src/car_ui.c:48:23: note: 'snprintf' output between 15 and 31 bytes into a destination of size 24
+   48 |                 (void)snprintf(cal, sizeof cal, "LF%u%u%u%u PRE%u%u%u%u",
+      |                       ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+   49 |                     (unsigned)app->route.task3_trace.lost_raw[0], (unsigned)app->route.task3_trace.lost_raw[1],
+      |                     ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+   50 |                     (unsigned)app->route.task3_trace.lost_raw[2], (unsigned)app->route.task3_trace.lost_raw[3],
+      |                     ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+   51 |                     (unsigned)app->route.task3_trace.valid_raw[0], (unsigned)app->route.task3_trace.valid_raw[1],
+      |                     ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+   52 |                     (unsigned)app->route.task3_trace.valid_raw[2], (unsigned)app->route.task3_trace.valid_raw[3]);
+      |                     ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+>> [ 30%] CC 'Core/Src/car_wheel.c'
+>> [ 32%] CC 'Core/Src/dual_pi_test.c'
+>> [ 34%] CC 'Core/Src/gpio.c'
+>> [ 36%] CC 'Core/Src/lab_uart_async.c'
+>> [ 38%] CC 'Core/Src/left_pi_test.c'
+>> [ 40%] CC 'Core/Src/main.c'
+./Core/Src/main.c:352:13: warning: 'BT_TestRun' defined but not used [-Wunused-function]
+  352 | static void BT_TestRun(void)
+      |             ^~~~~~~~~~
+./Core/Src/main.c:331:12: warning: 'Lab_PIForward' defined but not used [-Wunused-function]
+  331 | static int Lab_PIForward(LabPI *pi, float target_mps, float measured_mps,
+      |            ^~~~~~~~~~~~~
+./Core/Src/main.c:318:14: warning: 'Lab_WheelSpeed' defined but not used [-Wunused-function]
+  318 | static float Lab_WheelSpeed(int32_t delta, int forward_sign,
+      |              ^~~~~~~~~~~~~~
+./Core/Src/main.c:295:13: warning: 'Lab_PrintMPURaw' defined but not used [-Wunused-function]
+  295 | static void Lab_PrintMPURaw(void)
+      |             ^~~~~~~~~~~~~~~
+./Core/Src/main.c:278:13: warning: 'Lab_PrintBatteryRaw' defined but not used [-Wunused-function]
+  278 | static void Lab_PrintBatteryRaw(void)
+      |             ^~~~~~~~~~~~~~~~~~~
+./Core/Src/main.c:257:13: warning: 'Lab_PrintTickRate' defined but not used [-Wunused-function]
+  257 | static void Lab_PrintTickRate(void)
+      |             ^~~~~~~~~~~~~~~~~
+./Core/Src/main.c:236:13: warning: 'Lab_PrintEncoders' defined but not used [-Wunused-function]
+  236 | static void Lab_PrintEncoders(void)
+      |             ^~~~~~~~~~~~~~~~~
+./Core/Src/main.c:205:13: warning: 'Lab_MotorTestOnce' defined but not used [-Wunused-function]
+  205 | static void Lab_MotorTestOnce(void)
+      |             ^~~~~~~~~~~~~~~~~
+./Core/Src/main.c:149:13: warning: 'Lab_PrintLine' defined but not used [-Wunused-function]
+  149 | static void Lab_PrintLine(void)
+      |             ^~~~~~~~~~~~~
+./Core/Src/main.c:61:17: warning: 'line_log_ms' defined but not used [-Wunused-variable]
+   61 | static uint32_t line_log_ms = 0U;
+      |                 ^~~~~~~~~~~
+>> [ 42%] CC 'Core/Src/mpu6050.c'
+>> [ 44%] CC 'Core/Src/right_p_test.c'
+>> [ 46%] CC 'Core/Src/soft_i2c.c'
+>> [ 48%] CC 'Core/Src/stm32f1xx_hal_msp.c'
+>> [ 50%] CC 'Core/Src/stm32f1xx_it.c'
+>> [ 52%] CC 'Core/Src/syscalls.c'
+>> [ 54%] CC 'Core/Src/sysmem.c'
+>> [ 56%] CC 'Core/Src/system_stm32f1xx.c'
+>> [ 58%] CC 'Core/Src/task_oled.c'
+>> [ 60%] CC 'Core/Src/tim.c'
+>> [ 62%] CC 'Core/Src/usart.c'
+>> [ 64%] CC 'Core/Src/wheel_speed_diag.c'
+>> [ 66%] CC 'Core/Src/yaw_diag.c'
+>> [ 68%] AS 'Core/Startup/startup_stm32f103rctx.s'
+>> [ 70%] CC 'Drivers/STM32F1xx_HAL_Driver/Src/stm32f1xx_hal.c'
+>> [ 72%] CC 'Drivers/STM32F1xx_HAL_Driver/Src/stm32f1xx_hal_adc.c'
+>> [ 74%] CC 'Drivers/STM32F1xx_HAL_Driver/Src/stm32f1xx_hal_adc_ex.c'
+>> [ 76%] CC 'Drivers/STM32F1xx_HAL_Driver/Src/stm32f1xx_hal_cortex.c'
+>> [ 78%] CC 'Drivers/STM32F1xx_HAL_Driver/Src/stm32f1xx_hal_dma.c'
+>> [ 80%] CC 'Drivers/STM32F1xx_HAL_Driver/Src/stm32f1xx_hal_exti.c'
+>> [ 82%] CC 'Drivers/STM32F1xx_HAL_Driver/Src/stm32f1xx_hal_flash.c'
+>> [ 84%] CC 'Drivers/STM32F1xx_HAL_Driver/Src/stm32f1xx_hal_flash_ex.c'
+>> [ 86%] CC 'Drivers/STM32F1xx_HAL_Driver/Src/stm32f1xx_hal_gpio.c'
+>> [ 88%] CC 'Drivers/STM32F1xx_HAL_Driver/Src/stm32f1xx_hal_gpio_ex.c'
+>> [ 90%] CC 'Drivers/STM32F1xx_HAL_Driver/Src/stm32f1xx_hal_pwr.c'
+>> [ 92%] CC 'Drivers/STM32F1xx_HAL_Driver/Src/stm32f1xx_hal_rcc.c'
+>> [ 94%] CC 'Drivers/STM32F1xx_HAL_Driver/Src/stm32f1xx_hal_rcc_ex.c'
+>> [ 96%] CC 'Drivers/STM32F1xx_HAL_Driver/Src/stm32f1xx_hal_tim.c'
+>> [ 98%] CC 'Drivers/STM32F1xx_HAL_Driver/Src/stm32f1xx_hal_tim_ex.c'
+>> [100%] CC 'Drivers/STM32F1xx_HAL_Driver/Src/stm32f1xx_hal_uart.c'
+
+[ INFO ] start linking ...
+
+Memory region         Used Size  Region Size  %age Used
+             RAM:        5576 B        48 KB     11.34%
+           FLASH:       44508 B       256 KB     16.98%
+
+
+[ INFO ] start outputting files ...
+
+>> output hex file		[done]
+
+file path: "build/Debug/Sunward.hex"
+
+[ DONE ] build successfully !, elapsed time 0:0:3
+

@@ -1,0 +1,5 @@
+{
+  "Core/Inc/dual_pi_test.h": "ca66e29c33808280a1c30205831c2cfe2c6d14404f4f461b0f18a9fc23ec0c7d",
+  "Core/Src/dual_pi_test.c": "7c8caeb4ac31424c8e4246697da45177ddced5bc96d8da75cb75f546aa6fa30c",
+  "build/Debug/builder.params": "256eaa98fcb52868a5b75d2b44cf9fa46c613ed0d6edb2680d199ade517ed0bd"
+}

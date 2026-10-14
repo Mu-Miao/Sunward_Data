@@ -1,0 +1,5 @@
+PASS: Bluetooth RUN/STOP, identical log mirror, independent input fragments, STOP wins either simultaneous-port order, BT RX ORE/overflow stops both, recovery, BT TX saturation leaves USB/control/STOP live, BT 3s automatic stop and OFF.
+PASS: async TX queue full does not block control or STOP; RX ORE/overflow stop both and recover logging/restart; partial command expiry; RX during TX; TX copies caller buffer, wrap, empty IRQ disable; RX wrap; critical mask restored;  A=right positive, B=left negative; TIM8 left+/TIM4 right- feedback; independent PI response/integrals; upper/lower antiwindup; STOP/restart clears both; no auto start; exact/overflow commands; 3s boundary; RUN doesn't extend timer; OFF/LOW/ADC/GAP/UART stop both; either wheel REV/FAST/STALL stops both with F=L/R; counter/tick/DWT wrap
+
+Host test directory: /private/tmp/btcommands-check-gfl8nuft
+No real serial port opened.

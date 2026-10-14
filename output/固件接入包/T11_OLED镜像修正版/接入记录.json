@@ -1,0 +1,24 @@
+{
+  "backup": "/Users/mzh/Desktop/车车/output/固件备份/Sunward_OLED镜像修改前备份_2026-10-11_r6y3ea84",
+  "hardware_downloaded": false,
+  "orientation_physical_verified": false,
+  "source_files_changed": [
+    "Core/Src/task_oled.c"
+  ],
+  "change": "SSD1306 segment remap A1 to A0; COM scan C0 unchanged",
+  "unchanged_files_checked": [
+    "Core/Src/dual_pi_test.c",
+    "Core/Inc/dual_pi_test.h",
+    "Core/Inc/task_oled.h",
+    "Core/Src/main.c",
+    "Core/Src/gpio.c",
+    "Core/Src/mpu6050.c",
+    "Core/Src/soft_i2c.c",
+    "Core/Src/lab_uart_async.c",
+    "Sunward.ioc",
+    ".eide/eide.yml",
+    "build/Debug/builder.params"
+  ],
+  "build_returncode": 0,
+  "hex_sha256": "bb1deb12183e3a9ad295b66bf12232454d129de0b16ccf9057191ab6acc3b96b"
+}
