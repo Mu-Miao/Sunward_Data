@@ -55,3 +55,6 @@ Listings/
 
 # 本机已安装工程的构建参数，可由工程配置重新生成
 /output/固件接入包/*/installed_builder.params
+
+# 汇报构建缓存及本机依赖链接，保留成品 PPT
+/output/汇报/.build_*/
