@@ -1,0 +1,197 @@
+{
+  "address": "0x200000a8",
+  "size": 944,
+  "zero_decode": {
+    "runtime": {
+      "state": 0,
+      "old_tick": 0,
+      "old_ms": 0,
+      "dt_us": 0,
+      "fault_wheel": 0,
+      "bluetooth_on": 0
+    },
+    "state_name": "IDLE",
+    "heading": {
+      "phase": 0,
+      "angle": 0.0,
+      "reference": 0.0,
+      "error": 0.0,
+      "gyro_angle": 0.0,
+      "bias": 0.0,
+      "bias_rate": 0.0,
+      "fusion_active": 0,
+      "fusion_learning": 0,
+      "wheel_rate": 0.0,
+      "samples": 0,
+      "io_us": 0
+    },
+    "line": {
+      "raw": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "valid": 0,
+      "count": 0,
+      "error": 0.0,
+      "sample_ms": 0
+    },
+    "route": {
+      "motion": 0,
+      "distance_mm": [
+        0.0,
+        0.0
+      ],
+      "targets": [
+        0.0,
+        0.0
+      ],
+      "base": 0.0,
+      "elapsed_ms": 0,
+      "start_ms": 0
+    },
+    "task3": {
+      "phase": 0,
+      "fault": 0,
+      "leg": 0,
+      "start_heading_deg": 0.0,
+      "leg_start_mm": 0.0,
+      "phase_start_mm": 0.0,
+      "phase_ms": 0,
+      "lost_seen": 0,
+      "loss_seek": 0,
+      "gap_seek": 0,
+      "loss_limits": 0,
+      "loss_duration_ms": 0,
+      "loss_distance_mm": 0.0,
+      "loss_turn_deg": 0.0,
+      "entry_yaw_deg": 0.0,
+      "entry_diff_mmps": 0.0,
+      "edge_follow_active": 0,
+      "resume_start_mmps": 0.0
+    },
+    "phase_name": "IDLE",
+    "task4": {
+      "active": 0,
+      "completed_laps": 0,
+      "arc_number": 0,
+      "start_ms": 0,
+      "elapsed_ms": 0,
+      "resume_pending": 0,
+      "resume_active": 0,
+      "resume_ms": 0,
+      "ac_reference_deg": 0.0
+    },
+    "wheel": [
+      {
+        "velocity": 0.0,
+        "command": 0,
+        "integral": 0.0,
+        "bad_sign_us": 0
+      },
+      {
+        "velocity": 0.0,
+        "command": 0,
+        "integral": 0.0,
+        "bad_sign_us": 0
+      }
+    ],
+    "power": {
+      "adc": 0,
+      "valid": 0,
+      "sample_ms": 0,
+      "raw": 0
+    },
+    "button": {
+      "raw": 0,
+      "stable": 0,
+      "armed": 0,
+      "action": 0,
+      "selected_motion": 0,
+      "events": 0
+    },
+    "reverse_trace": {
+      "seen": 0,
+      "phase": 0,
+      "yaw": 0.0,
+      "targets": [
+        0.0,
+        0.0
+      ],
+      "velocity": [
+        0.0,
+        0.0
+      ]
+    },
+    "edge_trace": {
+      "seen": 0,
+      "phase": 0,
+      "limits": 0,
+      "raw": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "ms": 0,
+      "duration_ms": 0,
+      "travel_mm": 0.0,
+      "distance_mm": 0.0,
+      "yaw": 0.0
+    },
+    "vertex_trace": {
+      "seen": 0,
+      "point": 0,
+      "lap": 0,
+      "raw": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "distance_mm": 0.0,
+      "yaw": 0.0,
+      "gyro_yaw": 0.0,
+      "bias_rate": 0.0
+    },
+    "line_history": {
+      "valid_seen": 0,
+      "lost_seen": 0,
+      "previous_seen": 0,
+      "valid_raw": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "lost_raw": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "previous_raw": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "lost_arc_number": 0,
+      "lost_direction": 0,
+      "lost_ms": 0,
+      "valid_error": 0.0,
+      "valid_diff": 0.0,
+      "lost_yaw": 0.0,
+      "previous_error": 0.0,
+      "targets": [
+        0.0,
+        0.0
+      ],
+      "velocity": [
+        0.0,
+        0.0
+      ]
+    }
+  }
+}

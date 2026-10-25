@@ -1,0 +1,61 @@
+motion_legacy_api: PASS: prior serial GO100/GO20/heading/manual motion regression, timing/MPU/ADC/encoder/UART protections, braking/coast/settle/completion and unchanged ON key start/busy STOP.
+TRACE hash=3429f42ebd8f77e1 events=112477
+motion_car_app: PASS: prior serial GO100/GO20/heading/manual motion regression, timing/MPU/ADC/encoder/UART protections, braking/coast/settle/completion and unchanged ON key start/busy STOP.
+TRACE hash=3429f42ebd8f77e1 events=112477
+task2_legacy_api: PASS: calibrated1256mm BC endpoint regression; Task2 GPIO-only AB->BC->CD->DA->A four-point signals and final settled stop; white straight/black arc switching gated by distance, debounce and end heading; preserved half-circle settings and task1 regressions; four-mode keys, no BLE required, no premature entry/false arc loss endpoint; bounded missing edges, STOP/OFF/RX/IMU/FAST/GAP/LOW/ADC/STALL/REV/timeout protections, restart/held-key suppression, OLED limits and time wrap. Simulation is not field acceptance.
+TRACE hash=3f1edb33e98dd6ca events=130115
+task2_car_app: PASS: calibrated1256mm BC endpoint regression; Task2 GPIO-only AB->BC->CD->DA->A four-point signals and final settled stop; white straight/black arc switching gated by distance, debounce and end heading; preserved half-circle settings and task1 regressions; four-mode keys, no BLE required, no premature entry/false arc loss endpoint; bounded missing edges, STOP/OFF/RX/IMU/FAST/GAP/LOW/ADC/STALL/REV/timeout protections, restart/held-key suppression, OLED limits and time wrap. Simulation is not field acceptance.
+TRACE hash=3f1edb33e98dd6ca events=130115
+task3_legacy_api: IDEAL target-following schedule: prior=40000 ms revised=35210 ms; hypothetical track=140mm, not field acceptance.
+PASS: actual CarApp scheduler Task3 GPIO selection/start, initial AB->AC right gyro turn/settle, AC->CB->BD->DA settled completion, five signals, zero inner PI, no reverse commands, old heading gate isolation, STOP/OFF/RX/MPU/ADC/LOW/FAST/REV/STALL/GAP, line/turn/time guards, restart, telemetry congestion, encoder/millis wrap. Simulation only.
+task3_car_app: IDEAL target-following schedule: prior=40000 ms revised=35210 ms; hypothetical track=140mm, not field acceptance.
+PASS: actual CarApp scheduler Task3 GPIO selection/start, initial AB->AC right gyro turn/settle, AC->CB->BD->DA settled completion, five signals, zero inner PI, no reverse commands, old heading gate isolation, STOP/OFF/RX/MPU/ADC/LOW/FAST/REV/STALL/GAP, line/turn/time guards, restart, telemetry congestion, encoder/millis wrap. Simulation only.
+task4_legacy_api: PASS: Task4-only 2200 cap, unchanged 1800/3000 mode isolation, PI anti-windup/release and zero target, real scheduler output above1800, all retained fault stops and no restart. Software only.
+PASS: Task4 bounded stationary recovery/stable debounce/ramp, original deadline under chatter, exact deadline, invalid patterns, preserved loss snapshot, outer-probe slowdown, turn slowdown, protection priority and recovery millis wrap.
+IDEAL four-lap target-following schedule: 123190 ms; hypothetical track=140mm, not field acceptance.
+PASS: Task4 four laps, three settled automatic A joins, fixed gyro reference/total deadline, 17 signals, mode/commands/UI, later-lap protections/STOP priority, restart and wrap. Mock software only.
+task4_car_app: PASS: Task4-only 2200 cap, unchanged 1800/3000 mode isolation, PI anti-windup/release and zero target, real scheduler output above1800, all retained fault stops and no restart. Software only.
+PASS: Task4 bounded stationary recovery/stable debounce/ramp, original deadline under chatter, exact deadline, invalid patterns, preserved loss snapshot, outer-probe slowdown, turn slowdown, protection priority and recovery millis wrap.
+IDEAL four-lap target-following schedule: 123190 ms; hypothetical track=140mm, not field acceptance.
+PASS: Task4 four laps, three settled automatic A joins, fixed gyro reference/total deadline, 17 signals, mode/commands/UI, later-lap protections/STOP priority, restart and wrap. Mock software only.
+seek_legacy_api: PASS: real arc-entry counts, CB/DA inner-probe gap recovery, two trusted raw frames, frozen side/trend/curve direction, chatter rejection, no duplicate recovery count, arc history reset, inner-gap timeout latch and HIST telemetry. Software only.
+PASS: measured-spacing DA-only outer-probe bridge, mirrored 140/20 targets, synthetic recovery beyond old 20mm/12deg, trusted-direction retention, 30ms confirmation and ramp, fixed 500ms/35mm/18deg bounds, inner-probe scope, fault priority, no restart and GAP telemetry. Synthetic inputs, not physical coverage acceptance.
+PASS: unchanged 50ms reverse guard for positive/zero targets, both fault wheels, pre-cancel phase and velocity snapshots, OLED REV-L/R, snapshot retention and fresh-start clearing. Synthetic encoder inputs only.
+PASS: Task4 mirrored outer-to-inner probe gap sweeps, positive inner drive, retained direction under unconfirmed glitches, 30ms recovery, all original budgets and no restart; Task3 bridge unchanged. Synthetic inputs only.
+PASS: Task4 reported DA edge/dropout snapshots, recovery after 350ms, unchanged 30ms confirmation, fixed route references and STOP/OFF/IMU priority in the extended interval. Synthetic inputs only.
+PASS: default Task3/4 completion, D miss bounded acquisition without false point signals, settled turn/yaw recheck, all-white bridge/reacquisition, all bounds, invalid/no-history rejection, chatter deadline and fault priority. Software only.
+seek_car_app: PASS: real arc-entry counts, CB/DA inner-probe gap recovery, two trusted raw frames, frozen side/trend/curve direction, chatter rejection, no duplicate recovery count, arc history reset, inner-gap timeout latch and HIST telemetry. Software only.
+PASS: measured-spacing DA-only outer-probe bridge, mirrored 140/20 targets, synthetic recovery beyond old 20mm/12deg, trusted-direction retention, 30ms confirmation and ramp, fixed 500ms/35mm/18deg bounds, inner-probe scope, fault priority, no restart and GAP telemetry. Synthetic inputs, not physical coverage acceptance.
+PASS: unchanged 50ms reverse guard for positive/zero targets, both fault wheels, pre-cancel phase and velocity snapshots, OLED REV-L/R, snapshot retention and fresh-start clearing. Synthetic encoder inputs only.
+PASS: Task4 mirrored outer-to-inner probe gap sweeps, positive inner drive, retained direction under unconfirmed glitches, 30ms recovery, all original budgets and no restart; Task3 bridge unchanged. Synthetic inputs only.
+PASS: Task4 reported DA edge/dropout snapshots, recovery after 350ms, unchanged 30ms confirmation, fixed route references and STOP/OFF/IMU priority in the extended interval. Synthetic inputs only.
+PASS: default Task3/4 completion, D miss bounded acquisition without false point signals, settled turn/yaw recheck, all-white bridge/reacquisition, all bounds, invalid/no-history rejection, chatter deadline and fault priority. Software only.
+turn_legacy_api: PASS: Task4 B-only 3-degree relief through turn/settle/BD and yaw wrap; full A/C/D and vertex-search headings; unified 3-degree tolerance, original turn budgets, fixed references and off-centre capture. Software only.
+turn_car_app: PASS: Task4 B-only 3-degree relief through turn/settle/BD and yaw wrap; full A/C/D and vertex-search headings; unified 3-degree tolerance, original turn budgets, fixed references and off-centre capture. Software only.
+heading_legacy_api: PASS: optional historical full-distance gate, bounded missing-line search and unchanged upper distance limit.
+PASS: default Task4 BD rolls through 1/2/3-probe candidates inside endpoint window, fresh30ms confirmation after glitches, no out-of-window D, forward scheduler targets and D snapshot; B full-angle confirmation retained.
+PASS: inactive retained fusion kernel, static-CAL pure-gyro control in Task3/4 phases, no learning or stale negative-bias correction, no injected-bias drift at rest, wrap, calibration reset, explicit EN=0 diagnostics, unchanged Task1/2 and vertex/fault snapshots. Software only.
+PASS: production 160-byte UART frame cap, Task4 DPI/NAV delivery, parked F7 LOSS/ENTRY and F6 EDGE snapshots, moved-vehicle retention and full-TX non-blocking fault preservation.
+heading_car_app: PASS: optional historical full-distance gate, bounded missing-line search and unchanged upper distance limit.
+PASS: default Task4 BD rolls through 1/2/3-probe candidates inside endpoint window, fresh30ms confirmation after glitches, no out-of-window D, forward scheduler targets and D snapshot; B full-angle confirmation retained.
+PASS: inactive retained fusion kernel, static-CAL pure-gyro control in Task3/4 phases, no learning or stale negative-bias correction, no injected-bias drift at rest, wrap, calibration reset, explicit EN=0 diagnostics, unchanged Task1/2 and vertex/fault snapshots. Software only.
+PASS: production 160-byte UART frame cap, Task4 DPI/NAV delivery, parked F7 LOSS/ENTRY and F6 EDGE snapshots, moved-vehicle retention and full-TX non-blocking fault preservation.
+entry_legacy_api: PASS: eight continuous C/D joins, moving30ms vertex/3deg tangent confirmation, no parked entry/zero-drive handoff, retained budgets/stop priority and unchanged four-lap counting. Software only.
+PASS: C/D low-speed arc entry, 200ms minimum/60ms inner-or-centred confirmation, bounded white gaps/chatter, preserved arc distance/counts, exact deadlines, fail-closed patterns/protections and time/yaw wrap. Software only.
+entry_car_app: PASS: eight continuous C/D joins, moving30ms vertex/3deg tangent confirmation, no parked entry/zero-drive handoff, retained budgets/stop priority and unchanged four-lap counting. Software only.
+PASS: C/D low-speed arc entry, 200ms minimum/60ms inner-or-centred confirmation, bounded white gaps/chatter, preserved arc distance/counts, exact deadlines, fail-closed patterns/protections and time/yaw wrap. Software only.
+continuous_legacy_api: OLD C motor model: pass=0 mm=120.20 error=6.31
+FIX C motor model: pass=1 mm=82.51 error=2.74
+C handoff: 27 motor assumptions pass, maximum turn travel 90.23 mm; software model only.
+IDEAL continuous four-lap schedule: 126930 ms; target-following/160mm track, not field acceptance.
+PASS: production Task4 continuous A/B/C/D and3 rolling lap joins, both wheels positive through16 turns, no normal zero-drive handoffs, final settled completion, bounded moving recovery/search and retained fault stops. Software only.
+continuous_car_app: OLD C motor model: pass=0 mm=120.20 error=6.31
+FIX C motor model: pass=1 mm=82.51 error=2.74
+C handoff: 27 motor assumptions pass, maximum turn travel 90.23 mm; software model only.
+IDEAL continuous four-lap schedule: 126930 ms; target-following/160mm track, not field acceptance.
+PASS: production Task4 continuous A/B/C/D and3 rolling lap joins, both wheels positive through16 turns, no normal zero-drive handoffs, final settled completion, bounded moving recovery/search and retained fault stops. Software only.
+preview_legacy_api: IDEAL same-cruise four laps, 160mm track, 45mm probe lead: V14=128130 ms FLOW=122210 ms; software schedule only.
+PASS: C/D first-candidate turn, original window and debounce, no false point on glitches, STOP/sensor/heading/distance priority, four-lap comparison.
+preview_car_app: IDEAL same-cruise four laps, 160mm track, 45mm probe lead: V14=128130 ms FLOW=122210 ms; software schedule only.
+PASS: C/D first-candidate turn, original window and debounce, no false point on glitches, STOP/sensor/heading/distance priority, four-lap comparison.
+PASS: motion/task2/task3/task4/seek/turn/heading/entry/continuous/preview regressions; CarApp and compatibility APIs; separate module linkage.

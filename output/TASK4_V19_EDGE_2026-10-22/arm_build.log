@@ -1,0 +1,86 @@
+BUILD Core/Src/adc.c
+BUILD Core/Src/car_app.c
+BUILD Core/Src/car_button.c
+BUILD Core/Src/car_command.c
+BUILD Core/Src/car_heading.c
+BUILD Core/Src/car_line.c
+BUILD Core/Src/car_pi.c
+BUILD Core/Src/car_power.c
+BUILD Core/Src/car_route.c
+BUILD Core/Src/car_signal.c
+BUILD Core/Src/car_task3.c
+BUILD Core/Src/car_task3_port.c
+BUILD Core/Src/car_task4.c
+BUILD Core/Src/car_ui.c
+BUILD Core/Src/car_wheel.c
+BUILD Core/Src/dual_pi_test.c
+BUILD Core/Src/gpio.c
+BUILD Core/Src/lab_uart_async.c
+BUILD Core/Src/left_pi_test.c
+BUILD Core/Src/main.c
+Core/Src/main.c:352:13: warning: 'BT_TestRun' defined but not used [-Wunused-function]
+  352 | static void BT_TestRun(void)
+      |             ^~~~~~~~~~
+Core/Src/main.c:331:12: warning: 'Lab_PIForward' defined but not used [-Wunused-function]
+  331 | static int Lab_PIForward(LabPI *pi, float target_mps, float measured_mps,
+      |            ^~~~~~~~~~~~~
+Core/Src/main.c:318:14: warning: 'Lab_WheelSpeed' defined but not used [-Wunused-function]
+  318 | static float Lab_WheelSpeed(int32_t delta, int forward_sign,
+      |              ^~~~~~~~~~~~~~
+Core/Src/main.c:295:13: warning: 'Lab_PrintMPURaw' defined but not used [-Wunused-function]
+  295 | static void Lab_PrintMPURaw(void)
+      |             ^~~~~~~~~~~~~~~
+Core/Src/main.c:278:13: warning: 'Lab_PrintBatteryRaw' defined but not used [-Wunused-function]
+  278 | static void Lab_PrintBatteryRaw(void)
+      |             ^~~~~~~~~~~~~~~~~~~
+Core/Src/main.c:257:13: warning: 'Lab_PrintTickRate' defined but not used [-Wunused-function]
+  257 | static void Lab_PrintTickRate(void)
+      |             ^~~~~~~~~~~~~~~~~
+Core/Src/main.c:236:13: warning: 'Lab_PrintEncoders' defined but not used [-Wunused-function]
+  236 | static void Lab_PrintEncoders(void)
+      |             ^~~~~~~~~~~~~~~~~
+Core/Src/main.c:205:13: warning: 'Lab_MotorTestOnce' defined but not used [-Wunused-function]
+  205 | static void Lab_MotorTestOnce(void)
+      |             ^~~~~~~~~~~~~~~~~
+Core/Src/main.c:149:13: warning: 'Lab_PrintLine' defined but not used [-Wunused-function]
+  149 | static void Lab_PrintLine(void)
+      |             ^~~~~~~~~~~~~
+Core/Src/main.c:61:17: warning: 'line_log_ms' defined but not used [-Wunused-variable]
+   61 | static uint32_t line_log_ms = 0U;
+      |                 ^~~~~~~~~~~
+BUILD Core/Src/mpu6050.c
+BUILD Core/Src/right_p_test.c
+BUILD Core/Src/soft_i2c.c
+BUILD Core/Src/stm32f1xx_hal_msp.c
+BUILD Core/Src/stm32f1xx_it.c
+BUILD Core/Src/syscalls.c
+BUILD Core/Src/sysmem.c
+BUILD Core/Src/system_stm32f1xx.c
+BUILD Core/Src/task_oled.c
+BUILD Core/Src/tim.c
+BUILD Core/Src/usart.c
+BUILD Core/Src/wheel_speed_diag.c
+BUILD Core/Src/yaw_diag.c
+BUILD Core/Startup/startup_stm32f103rctx.s
+BUILD Drivers/STM32F1xx_HAL_Driver/Src/stm32f1xx_hal.c
+BUILD Drivers/STM32F1xx_HAL_Driver/Src/stm32f1xx_hal_adc.c
+BUILD Drivers/STM32F1xx_HAL_Driver/Src/stm32f1xx_hal_adc_ex.c
+BUILD Drivers/STM32F1xx_HAL_Driver/Src/stm32f1xx_hal_cortex.c
+BUILD Drivers/STM32F1xx_HAL_Driver/Src/stm32f1xx_hal_dma.c
+BUILD Drivers/STM32F1xx_HAL_Driver/Src/stm32f1xx_hal_exti.c
+BUILD Drivers/STM32F1xx_HAL_Driver/Src/stm32f1xx_hal_flash.c
+BUILD Drivers/STM32F1xx_HAL_Driver/Src/stm32f1xx_hal_flash_ex.c
+BUILD Drivers/STM32F1xx_HAL_Driver/Src/stm32f1xx_hal_gpio.c
+BUILD Drivers/STM32F1xx_HAL_Driver/Src/stm32f1xx_hal_gpio_ex.c
+BUILD Drivers/STM32F1xx_HAL_Driver/Src/stm32f1xx_hal_pwr.c
+BUILD Drivers/STM32F1xx_HAL_Driver/Src/stm32f1xx_hal_rcc.c
+BUILD Drivers/STM32F1xx_HAL_Driver/Src/stm32f1xx_hal_rcc_ex.c
+BUILD Drivers/STM32F1xx_HAL_Driver/Src/stm32f1xx_hal_tim.c
+BUILD Drivers/STM32F1xx_HAL_Driver/Src/stm32f1xx_hal_tim_ex.c
+BUILD Drivers/STM32F1xx_HAL_Driver/Src/stm32f1xx_hal_uart.c
+Memory region         Used Size  Region Size  %age Used
+             RAM:        5896 B        48 KB     12.00%
+           FLASH:       58108 B       256 KB     22.17%
+   text	   data	    bss	    dec	    hex	filename
+  58016	     92	   5804	  63912	   f9a8	/Users/mzh/.codex/worktrees/task4-v14-rolling/Sunward/build/Debug/Sunward.elf
+

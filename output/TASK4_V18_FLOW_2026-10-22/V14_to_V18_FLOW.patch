@@ -1,0 +1,1470 @@
+diff --git a/Core/Inc/car_config.h b/Core/Inc/car_config.h
+index fc317be..9d7638d 100644
+--- a/Core/Inc/car_config.h
++++ b/Core/Inc/car_config.h
+@@ -109,6 +109,11 @@
+ #define DPT_TASK3_TURN_MIN_MMPS 35.0f
+ /* 任务四沿用任务三几何；独立配置正常速度，以下时限用于故障保护。 */
+ #define DPT_TASK4_MAX_CMD 2200 /* V14：仅任务四1800→2200；轮速/堵转/反向等保护阈值保留。 */
++#define DPT_TASK4_ROLLING_ENTRY 1U /* V18：C/D原窗口见线即低速预转，连续确认后计点；对正后直接捕线。 */
++#define DPT_TASK4_CONTINUOUS 1U /* V18：A/B/C/D正常换段连续运动，第四圈终点或故障停车。 */
++#define DPT_TASK4_TURN_MMPS 100.0f /* 两轮前进时恢复足够差速；接近目标角仍降速。 */
++#define DPT_TASK4_TURN_INNER_MMPS 20.0f
++#define DPT_TASK4_TURN_LIMIT_MM 120.0f /* 双轮前进转向的位移预算；4秒转向时限保留。 */
+ #define DPT_TASK4_DIAGONAL_MMPS 270.0f /* V13：250→270，仅任务四正常直线；终点降速保留。 */
+ #define DPT_TASK4_ARC_MMPS 240.0f /* V13：220→240，仅正常巡线；入弧50、边缘120，寻线不提速。 */
+ #define DPT_TASK4_BD_TURN_RELIEF_DEG 3.0f /* V12：仅 B→BD 少左转3°，BD 直线保持同一目标。 */
+diff --git a/Core/Inc/car_task3.h b/Core/Inc/car_task3.h
+index 0019c67..beb6626 100644
+--- a/Core/Inc/car_task3.h
++++ b/Core/Inc/car_task3.h
+@@ -41,6 +41,9 @@ typedef struct {
+     /* 0 关闭入弧预转向；任务四在捕线后低速建立弧向，再交给正常巡线。 */
+     uint32_t arc_entry_ms, arc_entry_min_ms, arc_entry_confirm_ms;
+     float arc_entry_mm, arc_entry_deg, arc_entry_mmps, arc_entry_diff_mmps, arc_entry_line_gain;
++    uint8_t rolling_entry; /* C/D连续低速换段，省去入弧前两次停稳；默认0保留任务三流程。 */
++    uint8_t continuous_motion; /* 所有正常换段均滚动通过，最后一圈仍停稳完成。 */
++    float turn_inner_mmps; /* continuous_motion下转向内轮也保持正目标。 */
+ } CarTask3Config;
+ 
+ typedef struct {
+@@ -52,6 +55,7 @@ typedef struct {
+     uint8_t outermost; /* 当前有效图样为最左或最右单探头。 */
+     uint8_t side_probe; /* 有效单探头，包含内侧两路。 */
+     uint8_t enabled, stop_requested, protection_fault;
++    uint8_t continue_at_a; /* 仅任务四包装层授权前三圈A点不停接续。 */
+ } CarTask3Input;
+ 
+ typedef struct {
+@@ -60,6 +64,7 @@ typedef struct {
+     float left_mmps, right_mmps; /* 前进转向/入弧阶段的左右轮目标速度。 */
+     CarTask3Point signal_point; /* 点位提示仅在一次更新中给出，由上层计时控制声光持续时间。 */
+     uint8_t start_signal, reset_controllers;
++    uint8_t retarget_integrals; /* 连续低速换段：缩减降速轮的旧积分，不停车/清保护计时。 */
+ } CarTask3Output;
+ 
+ typedef struct {
+@@ -91,5 +96,6 @@ int CarTask3_Start(CarTask3 *route, const CarTask3Config *config,
+ void CarTask3_Update(CarTask3 *route, const CarTask3Input *input,
+     CarTask3Output *output);
+ void CarTask3_Cancel(CarTask3 *route);
++int CarTask3_NextLap(CarTask3 *route, const CarTask3Input *input, CarTask3Output *output);
+ const char *CarTask3_LegName(const CarTask3 *route);
+ #endif
+diff --git a/Core/Src/car_task3.c b/Core/Src/car_task3.c
+index 97bb05e..aa3f311 100644
+--- a/Core/Src/car_task3.c
++++ b/Core/Src/car_task3.c
+@@ -12,6 +12,10 @@ static int positive(float a) { return isfinite(a) && a > 0.0f; }
+ static int bounded_time(uint32_t t) { return t > 0U && t <= 80000U; }
+ static int config_valid(const CarTask3Config *c)
+ {
++    if (c->rolling_entry > 1U || c->continuous_motion > 1U) return 0;
++    if (c->continuous_motion && (!c->rolling_entry || !positive(c->turn_inner_mmps) ||
++        c->turn_inner_mmps > 30.0f || c->turn_mmps < c->turn_inner_mmps + 35.0f ||
++        c->turn_travel_limit_mm > 120.0f)) return 0;
+     if (c->arc_entry_ms != 0U &&
+         (c->arc_entry_ms > 1500U || c->arc_entry_min_ms < 100U ||
+          c->arc_entry_min_ms >= c->arc_entry_ms || c->arc_entry_confirm_ms < 30U ||
+@@ -72,7 +76,7 @@ static int config_valid(const CarTask3Config *c)
+ static int input_valid(const CarTask3Config *c, const CarTask3Input *i)
+ {
+     return isfinite(i->distance_mm) && isfinite(i->yaw_deg) &&
+-        isfinite(i->left_mmps) && isfinite(i->right_mmps) && i->heading_ready &&
++        isfinite(i->left_mmps) && isfinite(i->right_mmps) && i->heading_ready && i->continue_at_a <= 1U &&
+         i->sample_age_ms <= c->sample_max_age_ms && i->black_count <= 4U &&
+         (!i->line_valid || (i->black_count > 0U && i->black_count < 4U)) &&
+         (!i->line_valid || (isfinite(i->line_error) && fabsf(i->line_error) <= 3.0f)) &&
+@@ -97,6 +101,7 @@ static void phase(CarTask3 *r, CarTask3Phase p, const CarTask3Input *i, CarTask3
+     r->arc_side_valid = 0U;
+     o->control = T3_HALT;
+     o->reset_controllers = 1U;
++    o->retarget_integrals = r->config.continuous_motion;
+ }
+ static int stable(CarTask3 *r, int matches, uint32_t now)
+ {
+@@ -139,6 +144,24 @@ static float speed(const CarTask3 *r, const CarTask3Input *i, float cruise, floa
+     return fminf(v, ramp);
+ }
+ 
++/* 连续换段保持运动输出；角度按原容差确认，并受转向时间/位移预算限制。 */
++static void rolling_align(const CarTask3 *r, const CarTask3Input *i,
++    CarTask3Output *o, float target)
++{
++    float error = wrap(target - i->yaw_deg);
++    o->reset_controllers = 0U;
++    o->heading_deg = target;
++    if (fabsf(error) <= align_tolerance(r)) {
++        o->control = T3_HOLD_HEADING;
++        o->base_mmps = r->config.capture_mmps;
++    } else {
++        o->control = T3_TURN_FORWARD;
++        float inner = r->config.continuous_motion ? r->config.turn_inner_mmps : 0.0f;
++        o->left_mmps = error < 0.0f ? r->config.turn_mmps : inner;
++        o->right_mmps = error > 0.0f ? r->config.turn_mmps : inner;
++    }
++}
++
+ int CarTask3_ConfigValid(const CarTask3Config *c) { return c && config_valid(c); }
+ 
+ CarTask3Config CarTask3_DefaultConfig(void)
+@@ -182,6 +205,26 @@ int CarTask3_Start(CarTask3 *r, const CarTask3Config *c, const CarTask3Input *i)
+ 
+ void CarTask3_Cancel(CarTask3 *r) { if (r) fault(r, T3_ABORT); }
+ 
++int CarTask3_NextLap(CarTask3 *r, const CarTask3Input *i, CarTask3Output *o)
++{
++    if (!r || !i || !o) return 0;
++    if (r->phase != T3_DONE || !r->config.continuous_motion || !config_valid(&r->config)) {
++        fault(r, T3_CONFIG);
++    } else if (!i->enabled || i->stop_requested || i->protection_fault) fault(r, T3_ABORT);
++    else if (!input_valid(&r->config, i)) fault(r, T3_SENSOR);
++    else {
++        /* A点已由原出口窗口/航向/连续全白确认；保留固定AC参考，允许两轮仍在前进。 */
++        r->leg = 0U;
++        r->start_ms = r->previous_ms = i->now_ms; r->elapsed_ms = 0U;
++        r->leg_start_mm = i->distance_mm; r->pending_start_signal = 0U;
++        phase(r, T3_START_ALIGN, i, o);
++        rolling_align(r, i, o, r->start_heading_deg);
++        return 1;
++    }
++    memset(o, 0, sizeof *o); o->reset_controllers = 1U;
++    return 0;
++}
++
+ void CarTask3_Update(CarTask3 *r, const CarTask3Input *i, CarTask3Output *o)
+ {
+     if (!o) return;
+@@ -195,7 +238,8 @@ void CarTask3_Update(CarTask3 *r, const CarTask3Input *i, CarTask3Output *o)
+     if (r->phase == T3_FAULT) { o->reset_controllers = 1U; return; }
+     if (r->pending_start_signal) {
+         o->signal_point = T3_POINT_A;
+-        o->start_signal = o->reset_controllers = 1U;
++        o->start_signal = 1U;
++        o->reset_controllers = !r->config.continuous_motion;
+         r->pending_start_signal = 0U;
+     }
+     float progress = i->distance_mm - r->leg_start_mm;
+@@ -207,17 +251,35 @@ void CarTask3_Update(CarTask3 *r, const CarTask3Input *i, CarTask3Output *o)
+         if (fabsf(wrap(target - i->yaw_deg)) > r->config.diagonal_tolerance_deg) fault(r, T3_HEADING);
+         else if (progress > r->diagonal_mm + r->config.entry_window_mm) fault(r, T3_EDGE);
+         else if (progress >= r->diagonal_mm - early && i->line_valid) {
+-            /* 检测到候选顶点时先停止，再静止去抖确认。 */
+-            o->reset_controllers = 1U;
++            /* 任务四在原窗口内边走边确认；其他模式仍静止去抖。 */
++            if (r->config.rolling_entry) {
++                if (r->config.continuous_motion) {
++                    /* 前置探头在原C/D窗口首次见线便低速预转；不等确认完再起转。
++                       仍保持当前直线段，连续去抖后才计点、切段；毛刺消失即回直线。
++                       不在全白或窗口外按固定里程盲转。 */
++                    float tangent = wrap(r->start_heading_deg + r->diagonal_angle_deg +
++                        (r->leg == 2U ? 180.0f : 0.0f));
++                    rolling_align(r, i, o, tangent);
++                } else {
++                    o->control = T3_HOLD_HEADING;
++                    o->heading_deg = target; o->base_mmps = r->config.capture_mmps;
++                }
++                o->retarget_integrals = r->config.continuous_motion && !r->edge_seen;
++            } else o->reset_controllers = 1U;
+             if (stable(r, 1, i->now_ms)) {
+                 o->signal_point = r->leg == 0U ? T3_POINT_C : T3_POINT_D;
+-                phase(r, T3_VERTEX_BRAKE, i, o);
++                if (r->config.rolling_entry) {
++                    ++r->leg; phase(r, T3_ALIGN, i, o);
++                    rolling_align(r, i, o, align_heading(r));
++                } else phase(r, T3_VERTEX_BRAKE, i, o);
+             }
+         } else if (r->config.vertex_seek_ms != 0U && progress >= r->diagonal_mm &&
+                    i->black_count == 0U) {
+-            /* 预计已到 C/D 附近但探头仍全白：保留原顶点距离窗，先停再向弧线切线接近。
++            /* 预计已到 C/D 附近但探头仍全白：保留原顶点距离窗，向弧线切线接近。
+                此时不报告经过顶点，也不假定已经在线上。 */
+             phase(r, T3_VERTEX_SEEK, i, o);
++            if (r->config.continuous_motion)
++                rolling_align(r, i, o, wrap(r->start_heading_deg + r->diagonal_angle_deg + (r->leg == 2U ? 180.0f : 0.0f)));
+         } else {
+             stable(r, 0, i->now_ms);
+             o->control = T3_HOLD_HEADING;
+@@ -270,8 +332,9 @@ void CarTask3_Update(CarTask3 *r, const CarTask3Input *i, CarTask3Output *o)
+                     r->arc_outer_valid = i->outermost; r->arc_side_valid = i->side_probe;
+                     o->reset_controllers = 0U;
+                     o->control = T3_FOLLOW_LINE; o->base_mmps = r->config.start_mmps;
+-                } else if ((i->line_valid && recovered) || (!i->line_valid && r->loss_seek)) {
+-                    if (i->line_valid) {
++                } else if ((i->line_valid && (recovered || (r->config.rolling_entry && r->loss_seek))) ||
++                           (!i->line_valid && r->loss_seek)) {
++                    if (i->line_valid && recovered) {
+                         float bias = (r->leg == 1U ? -1.0f : 1.0f) * r->config.arc_entry_diff_mmps;
+                         float limit = r->config.arc_entry_mmps * 0.4f;
+                         r->entry_diff_mmps = fmaxf(-limit, fminf(limit,
+@@ -292,10 +355,22 @@ void CarTask3_Update(CarTask3 *r, const CarTask3Input *i, CarTask3Output *o)
+         if (progress > r->config.arc_mm + r->config.exit_window_mm) fault(r, T3_EDGE);
+         else if (end_white) {
+             r->lost_seen = 0U;
+-            o->reset_controllers = 1U;
++            if (r->config.continuous_motion) {
++                o->control = T3_HOLD_HEADING; o->base_mmps = r->config.capture_mmps;
++                o->heading_deg = tangent_heading(r, 1);
++                o->retarget_integrals = !r->edge_seen;
++            } else o->reset_controllers = 1U;
+             if (stable(r, 1, i->now_ms)) {
+-                if (r->leg == 3U) phase(r, T3_FINAL_BRAKE, i, o);
+-                else { o->signal_point = T3_POINT_B; phase(r, T3_VERTEX_BRAKE, i, o); }
++                if (r->leg == 3U) {
++                    if (r->config.continuous_motion && i->continue_at_a) {
++                        phase(r, T3_DONE, i, o); o->signal_point = T3_POINT_A;
++                    } else phase(r, T3_FINAL_BRAKE, i, o);
++                } else {
++                    o->signal_point = T3_POINT_B;
++                    if (r->config.continuous_motion) {
++                        ++r->leg; phase(r, T3_ALIGN, i, o); rolling_align(r, i, o, align_heading(r));
++                    } else phase(r, T3_VERTEX_BRAKE, i, o);
++                }
+             }
+         } else {
+             stable(r, 0, i->now_ms);
+@@ -306,7 +381,8 @@ void CarTask3_Update(CarTask3 *r, const CarTask3Input *i, CarTask3Output *o)
+                 r->gap_seek = r->loss_seek &&
+                     ((r->leg == 3U && r->arc_outer_valid && r->config.da_outer_gap) ||
+                      (r->arc_side_valid && r->config.history_gap));
+-                o->reset_controllers = 1U;
++                o->reset_controllers = !r->config.continuous_motion || !r->loss_seek;
++                o->retarget_integrals = r->config.continuous_motion && r->loss_seek;
+             }
+             if (r->lost_seen && !i->line_valid && i->black_count != 0U) r->loss_seek = r->gap_seek = 0U;
+             uint32_t budget = r->loss_seek ? r->config.white_seek_ms : r->config.lost_ms;
+@@ -343,7 +419,13 @@ void CarTask3_Update(CarTask3 *r, const CarTask3Input *i, CarTask3Output *o)
+                     if (!r->recovery_seen) { r->recovery_seen = 1U; r->recovery_start_ms = i->now_ms; }
+                     recovered = (uint32_t)(i->now_ms - r->recovery_start_ms) >= r->config.recovery_ms;
+                 }
+-                if (!recovered) o->reset_controllers = 1U;
++                if (!recovered) {
++                    if (r->config.continuous_motion && r->loss_seek) {
++                        o->control = T3_SEEK_LINE; o->base_mmps = r->config.seek_mmps;
++                        o->heading_deg = wrap(r->lost_yaw_deg + (r->leg == 1U ? 1.0f : -1.0f) *
++                            fmaxf(loss_travel, 0.0f) / r->config.radius_mm * 57.2957795131f);
++                    } else o->reset_controllers = 1U;
++                }
+                 else {
+                     if (r->lost_seen) { r->resume_active = 1U; r->resume_ms = i->now_ms; }
+                     r->lost_seen = r->recovery_seen = r->loss_seek = r->gap_seek = 0U;
+@@ -370,10 +452,14 @@ void CarTask3_Update(CarTask3 *r, const CarTask3Input *i, CarTask3Output *o)
+         else if (fabsf(wrap(i->yaw_deg - diagonal_heading(r))) > r->diagonal_angle_deg + 12.0f)
+             fault(r, T3_HEADING);
+         else if (i->line_valid) {
+-            o->reset_controllers = 1U;
++            if (r->config.rolling_entry) rolling_align(r, i, o, tangent);
++            else o->reset_controllers = 1U;
+             if (stable(r, 1, i->now_ms)) {
+                 o->signal_point = r->leg == 0U ? T3_POINT_C : T3_POINT_D;
+-                phase(r, T3_VERTEX_BRAKE, i, o);
++                if (r->config.rolling_entry) {
++                    ++r->leg; phase(r, T3_ALIGN, i, o);
++                    rolling_align(r, i, o, align_heading(r));
++                } else phase(r, T3_VERTEX_BRAKE, i, o);
+             }
+         } else {
+             stable(r, 0, i->now_ms);
+@@ -381,7 +467,16 @@ void CarTask3_Update(CarTask3 *r, const CarTask3Input *i, CarTask3Output *o)
+                 /* 全黑/不连续黑线不能作为搜索方向，保持零输出直到原预算到期。 */
+                 o->reset_controllers = 1U; r->settled_seen = 0U;
+             } else if (!r->seek_aligned) {
+-                if (fabsf(error) <= r->config.align_tolerance_deg) {
++                if (r->config.continuous_motion) {
++                    rolling_align(r, i, o, tangent);
++                    if (fabsf(error) <= r->config.align_tolerance_deg) {
++                        o->base_mmps = r->config.seek_mmps;
++                        if (!r->settled_seen) { r->settled_seen = 1U; r->settled_ms = i->now_ms; }
++                        if ((uint32_t)(i->now_ms - r->settled_ms) >= r->config.debounce_ms) {
++                            r->seek_aligned = 1U; r->seek_forward_ms = i->now_ms; r->seek_forward_mm = i->distance_mm;
++                        }
++                    } else r->settled_seen = 0U;
++                } else if (fabsf(error) <= r->config.align_tolerance_deg) {
+                     o->reset_controllers = 1U;
+                     if (fabsf(i->left_mmps) <= 5.0f && fabsf(i->right_mmps) <= 5.0f) {
+                         if (!r->settled_seen) { r->settled_seen = 1U; r->settled_ms = i->now_ms; }
+@@ -450,30 +545,41 @@ void CarTask3_Update(CarTask3 *r, const CarTask3Input *i, CarTask3Output *o)
+         if ((uint32_t)(i->now_ms - r->phase_ms) >= r->config.align_timeout_ms ||
+             phase_travel > r->config.turn_travel_limit_mm) fault(r, T3_TURN);
+         else if (fabsf(error) <= align_tolerance(r)) {
+-            o->reset_controllers = 1U;
+-            if (stable(r, 1, i->now_ms)) {
+-                if (r->phase == T3_START_ALIGN) {
+-                    /* 停稳单独计时，转向总时间和距离限制仍从原起点计算。 */
+-                    uint32_t turn_ms = r->phase_ms;
+-                    float turn_origin = r->phase_start_mm;
+-                    phase(r, T3_START_SETTLE, i, o);
+-                    r->start_settle_ms = i->now_ms;
+-                    r->phase_ms = turn_ms;
+-                    r->phase_start_mm = turn_origin;
++            if (r->config.continuous_motion || (r->phase == T3_ALIGN && (r->leg & 1U) && r->config.rolling_entry)) {
++                int aligned = stable(r, 1, i->now_ms);
++                if (aligned) {
++                    phase(r, r->leg & 1U ? T3_CAPTURE : T3_DIAGONAL, i, o);
++                    if (!(r->leg & 1U)) r->leg_start_mm = i->distance_mm;
+                 }
+-                else {
+-                    uint32_t turn_ms = r->phase_ms; float origin = r->phase_start_mm;
+-                    phase(r, T3_ALIGN_SETTLE, i, o);
+-                    r->start_settle_ms = i->now_ms; r->phase_ms = turn_ms; r->phase_start_mm = origin;
++                rolling_align(r, i, o, target);
++            } else {
++                o->reset_controllers = 1U;
++                if (stable(r, 1, i->now_ms)) {
++                    if (r->phase == T3_START_ALIGN) {
++                        /* 停稳单独计时，转向总时间和距离限制仍从原起点计算。 */
++                        uint32_t turn_ms = r->phase_ms;
++                        float turn_origin = r->phase_start_mm;
++                        phase(r, T3_START_SETTLE, i, o);
++                        r->start_settle_ms = i->now_ms;
++                        r->phase_ms = turn_ms;
++                        r->phase_start_mm = turn_origin;
++                    } else {
++                        uint32_t turn_ms = r->phase_ms; float origin = r->phase_start_mm;
++                        phase(r, T3_ALIGN_SETTLE, i, o);
++                        r->start_settle_ms = i->now_ms; r->phase_ms = turn_ms; r->phase_start_mm = origin;
++                    }
+                 }
+             }
+         } else {
+             stable(r, 0, i->now_ms);
+             o->control = T3_TURN_FORWARD;
+             o->heading_deg = target;
+-            /* 内轮目标为零、外轮目标为正，采用单轮前进转向，不请求倒车。 */
+-            o->left_mmps = error < 0.0f ? r->config.turn_mmps : 0.0f;
+-            o->right_mmps = error > 0.0f ? r->config.turn_mmps : 0.0f;
++            /* 连续模式两轮正目标；任务三保留单轮前进转向。 */
++            if (r->config.continuous_motion) rolling_align(r, i, o, target);
++            else {
++                o->left_mmps = error < 0.0f ? r->config.turn_mmps : 0.0f;
++                o->right_mmps = error > 0.0f ? r->config.turn_mmps : 0.0f;
++            }
+         }
+     } else if (r->phase == T3_CAPTURE) {
+         /* C/D 保持完整切线方向低速接近，读到有效黑线后由巡线纠偏接管。 */
+@@ -493,6 +599,13 @@ void CarTask3_Update(CarTask3 *r, const CarTask3Input *i, CarTask3Output *o)
+                     bias + r->config.arc_entry_line_gain * i->line_error));
+                 r->arc_side_valid = i->side_probe;
+             }
++            if (r->config.rolling_entry) {
++                o->reset_controllers = 0U;
++                o->control = r->config.arc_entry_ms ? T3_ENTER_ARC : T3_FOLLOW_LINE;
++                o->base_mmps = r->config.arc_entry_ms ? r->config.arc_entry_mmps : r->config.capture_mmps;
++                o->left_mmps = o->base_mmps + r->entry_diff_mmps;
++                o->right_mmps = o->base_mmps - r->entry_diff_mmps;
++            }
+             /* 从进入半圆时重新计算里程，排除顶点转向和捕获期间的移动。 */
+             r->leg_start_mm = i->distance_mm;
+         } else {
+diff --git a/Core/Src/car_task3_port.c b/Core/Src/car_task3_port.c
+index f9393e9..6e43cf2 100644
+--- a/Core/Src/car_task3_port.c
++++ b/Core/Src/car_task3_port.c
+@@ -27,6 +27,7 @@ CarTask3Input CarTask3Port_Input(const CarAppContext *app, uint32_t now,
+ 
+ void CarTask3Port_Apply(CarAppContext *app, const CarTask3Output *o, uint32_t now)
+ {
++    float previous_targets[2] = {app->route.targets[LEFT], app->route.targets[RIGHT]};
+     app->route.targets[LEFT] = app->route.targets[RIGHT] = 0.0f;
+     /* 整车已锁存故障时，之前计算的运动输出不得重新使电机启动。 */
+     if (app->runtime.state != RUNNING) {
+@@ -51,12 +52,18 @@ void CarTask3Port_Apply(CarAppContext *app, const CarTask3Output *o, uint32_t no
+         app->route.targets[LEFT] = o->left_mmps;
+         app->route.targets[RIGHT] = o->right_mmps;
+         /* 任务三、四接近目标角时降低外轮速度，减少不同车架惯性导致的过冲。
+-           仍按陀螺仪确认角度，并保留原时间、距离及内轮零目标保护。 */
++           仍按陀螺仪确认角度；任务四连续模式保留正内轮与最小差速。 */
+         if (CarMotion_IsFigureEight(app->route.motion)) {
+             float slow = app->route.motion == MOVE_TASK4 ? DPT_TASK4_TURN_SLOW_DEG : DPT_TASK3_TURN_SLOW_DEG;
+             float floor = app->route.motion == MOVE_TASK4 ? DPT_TASK4_TURN_MIN_MMPS : DPT_TASK3_TURN_MIN_MMPS;
+             float scale = fminf(1.0f, fabsf(app->heading.error) / slow);
+-            for (unsigned w = 0; w < 2U; ++w)
++            if (app->route.motion == MOVE_TASK4 && app->route.task3.config.continuous_motion) {
++                unsigned outer = app->route.targets[LEFT] > app->route.targets[RIGHT] ? LEFT : RIGHT;
++                unsigned inner = 1U - outer;
++                /* 内轮保持20；外轮最低55，保留原35mm/s最小差速。 */
++                app->route.targets[outer] = fminf(app->route.targets[outer],
++                    fmaxf(floor + app->route.targets[inner], app->route.targets[outer] * scale));
++            } else for (unsigned w = 0; w < 2U; ++w)
+                 if (app->route.targets[w] > 0.0f)
+                     app->route.targets[w] = fminf(app->route.targets[w],
+                         fmaxf(floor, app->route.targets[w] * scale));
+@@ -76,10 +83,10 @@ void CarTask3Port_Apply(CarAppContext *app, const CarTask3Output *o, uint32_t no
+         app->route.targets[LEFT] = base + diff; app->route.targets[RIGHT] = base - diff;
+         app->route.base = base; app->line.diff = diff;
+     } else if (o->control == T3_SEEK_LINE) {
+-        /* 仅核心已授权的弧段全白桥接；不调用正常巡线接口，也不伪造 valid。 */
++        /* 仅核心已授权的弧段桥接及移动恢复确认；不伪造 valid，不续期预算。 */
+         if (app->route.task3.phase != T3_ARC || !app->route.task3.loss_seek ||
+             !app->route.task3.arc_valid_seen || !app->route.task3_trace.valid_seen ||
+-            app->line.valid || app->line.count != 0U) {
++            (app->line.valid ? !(app->route.task3.config.continuous_motion && app->route.task3.lost_seen) : app->line.count != 0U)) {
+             app->runtime.drive(0, 0); CarWheel_Clear(app); return;
+         }
+         float base = fminf(o->base_mmps, 50.0f);
+@@ -118,6 +125,18 @@ void CarTask3Port_Apply(CarAppContext *app, const CarTask3Output *o, uint32_t no
+     } else if (o->control == T3_FOLLOW_LINE) {
+         CarLine_SetTargets(app, now, o->base_mmps);
+     }
++    if (app->runtime.state == RUNNING && app->route.motion == MOVE_TASK4 &&
++        app->route.task3.config.continuous_motion && o->retarget_integrals &&
++        !o->reset_controllers && o->control != T3_HALT) {
++        /* 只在已确认的换段/首次低速确认时缩减降速轮积分。
++           防止直线大积分带进低速转向；不增加积分、不发零驱动，
++           不重置反向/堵转计时。后续每拍仍由原PI和保护处理。 */
++        for (unsigned w = 0; w < 2U; ++w) {
++            float target = app->route.targets[w], previous = previous_targets[w];
++            if (target > 0.0f && target < previous)
++                app->wheel.items[w].integral *= target / previous;
++        }
++    }
+     if (app->runtime.state == RUNNING && o->signal_point != T3_NO_POINT) {
+         app->signal.ms = now;
+         CarSignal_Set(app, 1);
+diff --git a/Core/Src/car_task4.c b/Core/Src/car_task4.c
+index 7fe63be..5d0f7b1 100644
+--- a/Core/Src/car_task4.c
++++ b/Core/Src/car_task4.c
+@@ -18,6 +18,11 @@ CarTask3Config CarTask4_Config(void)
+     config.arc_entry_mmps = DPT_TASK4_ARC_ENTRY_MMPS;
+     config.arc_entry_diff_mmps = DPT_TASK4_ARC_ENTRY_DIFF_MMPS;
+     config.arc_entry_line_gain = DPT_LINE_GAIN * config.arc_entry_mmps / DPT_LINE_CRUISE_MMPS;
++    config.rolling_entry = DPT_TASK4_ROLLING_ENTRY;
++    config.continuous_motion = DPT_TASK4_CONTINUOUS;
++    config.turn_mmps = DPT_TASK4_TURN_MMPS;
++    config.turn_inner_mmps = DPT_TASK4_TURN_INNER_MMPS;
++    config.turn_travel_limit_mm = DPT_TASK4_TURN_LIMIT_MM;
+     /* 外层统一执行四圈总计 160 秒的超时保护。
+        不将任务三的 40 秒比赛时限单独施加到任务四每一圈。 */
+     config.deadline_ms = DPT_TASK4_LAP_WATCHDOG_MS;
+@@ -26,13 +31,13 @@ CarTask3Config CarTask4_Config(void)
+     config.recovery_ms = DPT_TASK4_RECOVERY_MS;
+     /* 2026-10-18：BD 末段已有有效探头观测，满名义距离后却全白搜索超时。
+        前置探头的碰线里程不等于车轴到 D 的几何长度；恢复原终点窗口内
+-       停车并连续确认有效线，不再越过候选线等待满里程。原上界/搜索预算保留。 */
++       连续确认有效线，不再越过候选线等待满里程。原上界/搜索预算保留。 */
+     config.bd_full_distance = 0U;
+-    /* 各点统一 ±3 度停稳复核；B 的目标与 BD 行驶共同减去独立少转量。 */
++    /* A/B/C/D均按同一±3度容差移动确认。B与BD共用少转目标。 */
+     config.b_full_align = 1U;
+     config.b_align_tolerance_deg = config.align_tolerance_deg;
+-    /* DA 入弧前不能在切线前约 8 度就交给边缘探头反馈；
+-       仅任务四 D 点完整对正并复核停稳，不改变捕获图样和原转向预算。 */
++    /* D点使用完整切线与独立容差；边缘探头不能提前约8度结束转向。
++       双轮连续转向仍受时间与独立位移预算限制。 */
+     config.d_full_align = 1U;
+     config.d_align_tolerance_deg = config.align_tolerance_deg;
+     config.da_outer_gap = 1U;
+@@ -76,7 +81,9 @@ void CarTask4_Update(CarTask4 *task, CarTask3 *lap,
+         return;
+     }
+     CarTask3Phase previous_phase = lap->phase;
+-    CarTask3_Update(lap, input, output);
++    CarTask3Input lap_input = *input;
++    lap_input.continue_at_a = lap->config.continuous_motion && task->completed_laps + 1U < DPT_TASK4_LAPS;
++    CarTask3_Update(lap, &lap_input, output);
+     if ((lap->phase == T3_ARC_ENTRY && previous_phase != T3_ARC_ENTRY) ||
+         (lap->phase == T3_ARC && previous_phase != T3_ARC && previous_phase != T3_ARC_ENTRY))
+         ++task->arc_number;
+@@ -94,9 +101,13 @@ void CarTask4_Update(CarTask4 *task, CarTask3 *lap,
+         }
+     } else task->resume_pending = task->resume_active = 0U;
+     if (lap->phase != T3_DONE) return;
+-    /* T20 单圈核心仅在 A 点两轮停稳后报告完成，此时圈数只增加一次。 */
++    /* A点出口确认后只计圈一次；连续模式前三圈当拍接续，末圈仍停稳完成。 */
+     ++task->completed_laps;
+     if (task->completed_laps == DPT_TASK4_LAPS) { task->active = 0U; return; }
++    if (lap->config.continuous_motion) {
++        if (!CarTask3_NextLap(lap, input, output)) task->active = 0U;
++        return;
++    }
+     CarTask3Config config = lap->config;
+     config.start_from_ab = 1U; /* 在 A 点复用已有的陀螺仪转向及停稳阶段。 */
+     if (!CarTask3_Start(lap, &config, input)) {
+diff --git a/Core/Src/car_ui.c b/Core/Src/car_ui.c
+index a5071cc..0507a70 100644
+--- a/Core/Src/car_ui.c
++++ b/Core/Src/car_ui.c
+@@ -28,7 +28,7 @@ void CarUI_UpdateOLED(CarAppContext *app, uint32_t now, int enabled)
+             state_text = wheel_state;
+         }
+         const char *title = "TASK 1 A->B";
+-        if (app->route.motion == MOVE_TASK4 || (app->route.motion == MOVE_NONE && app->button.selected_motion == MOVE_TASK4)) title = "TASK 4 V14 PWM22";
++        if (app->route.motion == MOVE_TASK4 || (app->route.motion == MOVE_NONE && app->button.selected_motion == MOVE_TASK4)) title = "TASK 4 V18 FLOW";
+         else if (app->route.motion == MOVE_TASK3 || (app->route.motion == MOVE_NONE && app->button.selected_motion == MOVE_TASK3)) title = "TASK 3 V3 GYRO";
+         else if (app->route.motion == MOVE_TASK2 || (app->route.motion == MOVE_NONE && app->button.selected_motion == MOVE_TASK2)) title = "TASK 2 ONE LAP";
+         else if (app->route.motion == MOVE_LINE || (app->route.motion == MOVE_NONE && app->button.selected_motion == MOVE_LINE)) title = "TEST HALF ARC";
+diff --git a/README.md b/README.md
+index aa9e4fe..ae486c4 100644
+--- a/README.md
++++ b/README.md
+@@ -1,24 +1,20 @@
+-# Sunward / V14 PWM22：独立输出上限
++# Sunward / V18 FLOW：V14 基础连续转弯
+ 
+-固定保留V14控制代码：任务四输出上限2200，其余速度目标与保护沿用该版。包含原停车确认和单轮转向。
++基于 `codex/task4-v14-pwm22`（`242b647`），本地修改分支为 `codex/task4-v14-rolling`。任务四 C/D 在原点位窗口首次见线时开始低速预转；正常换段与前三圈 A 点接续连续运动，第四圈终点停稳完成。标题为 `TASK 4 V18 FLOW`。
+ 
+-分支：`codex/task4-v14-pwm22`。16组软件回归及ARM构建通过；没有匹配V14 ELF校验值的现场采集记录。
++- [改动、参数与验证说明](TASK4_V18_FLOW_说明.md)
++- [模块接口](MODULES.md)
++- 原 V14 固件继续保留在 `deliverables/task4-v14-pwm22/`，不作为本版下载文件。
+ 
+-- [本版参数与保护说明](TASK4_V14_任务四输出2200_说明.md)
+-- [模块接口说明](MODULES.md)
+-- [pyOCD只读采集](tools/PYOCD_采集说明.md)
+-- [V14原版HEX、ELF及验证数据](deliverables/task4-v14-pwm22/README.md)
++## 构建
+ 
+-## 构建与使用
++```sh
++python3 tools/tests/run_tests.py --sanitize
++python3 tools/build_firmware.py
++```
+ 
+-使用既有EIDE/CubeIDE工程，选择Debug并执行Rebuild。调参入口为 `Core/Inc/car_config.h`。
++构建脚本优先使用已安装的 STM32CubeIDE GCC，也支持 `--cc /path/to/arm-none-eabi-gcc`。仅使用 Python 标准库。输出为 `build/Debug/Sunward.hex`、`Sunward.elf`，构建日志和校验清单在同目录。也可用现有 EIDE/CubeIDE 工程重新构建。
+ 
+-主机构建与回归：`python3 tools/tests/run_tests.py --sanitize`。模拟HAL不加入固件包含路径。
++OFF 且停车时短按 PA0 静态 CAL；READY 后 ON 并按键启动。当前起始摆放方向仍为 A 朝 B。运行中按键、OFF 或 `STOP!` 均可停车。
+ 
+-固件输出为 `build/Debug/Sunward.hex` 和 `Sunward.elf`；下载时明确选择对应版本，EIDE旧下载路径可能指向其他固件。 本版标题为 `TASK 4 V14 PWM22`。
+-
+-OFF且停车时短按PA0静态CAL；READY后ON并按键启动。运行中按键、实体OFF或 `STOP!` 均可停车；原保护与启动条件保留。
+-
+-## 历史资料
+-
+-旧版本说明与完整实验记录统一保留在[main实验档案](https://github.com/Mu-Miao/Sunward/tree/main/docs/experiments)，本分支只保留当前需要的说明。历史文件也可从整理前提交查看；不将其他固件的成功记录计为本版验收。
++20 组 ASan/UBSan 软件回归、50 个 ARM 编译单元及 HEX 校验通过；本版未烧录、未实车验证。下载时明确选择 V18 FLOW 文件并核对屏幕标题。
+diff --git "a/TASK4_V18_FLOW_\350\257\264\346\230\216.md" "b/TASK4_V18_FLOW_\350\257\264\346\230\216.md"
+new file mode 100644
+index 0000000..3763d8f
+--- /dev/null
++++ "b/TASK4_V18_FLOW_\350\257\264\346\230\216.md"
+@@ -0,0 +1,53 @@
++# V18 FLOW：基于 V14 的提前转向和连续换段
++
++日期：2026-10-22。基线为用户指定分支 `codex/task4-v14-pwm22`，提交 `242b647ed1a8470ea77b5fc2576e4198fb08c912`；本地新分支 `codex/task4-v14-rolling`。原工作目录 dev 及 `.eide/eide.yml` 的未提交改动保持原状。未推送、未烧录。
++
++## 原因与修改
++
++V14 在候选顶点处输出 HALT，去抖后进入刹停阶段；转向对正后再次等待两轮低于 5mm/s 并停稳 200ms。前三圈回 A 也停车重启。这些步骤增加停顿和重新加速时间。
++
++本版从 V14 移植仓库现有的连续控制及积分衔接实现，并新增首次候选线预转和任务四独立转弯速度：
++
++1. C/D：保留原 ±120mm 候选窗口。前置探头首次读到有效黑线便开始两轮前进的低速转向；原连续 30ms 确认完成后才记点、发提示并换段。窗口外不预转；窗口内全白不按固定距离提前盲转。单帧毛刺消失时恢复原斜线航向，不计点。
++2. A/B/C/D：正常去抖、角度确认、捕线到入弧和巡线的交接不再输出显式零驱动；不要求中途轮速归零。对正仍要求 ±3° 连续 30ms。
++3. 圈间：前三圈 A 点当拍接续下一圈，固定使用第一次建立的 AC 航向；第四圈保留最终停稳。总共 4 圈、8 段入弧、17 次声光提示。
++4. PI：仅在首次低速确认或换段时，对降速轮执行 `积分 *= 新目标 / 旧目标`，不增加升速轮积分，不重置反向/堵转累计。普通巡线每拍不重复缩减。PI 在实速高于目标时仍允许零 PWM 减速滑行，正目标不等于保证实物每拍有驱动力。
++5. 任务四转向外轮最高 100、内轮 20mm/s；近目标角外轮降到最低 55mm/s。相比移植后 80/20 的配置，提高差速可避免双轮前进使转向过慢。
++
++## 参数与范围
++
++| 项目 | V14 | V18 FLOW |
++| --- | --- | --- |
++| 直线 / 正常弧线目标 | 270 / 240mm/s | 270 / 240mm/s |
++| 转向外 / 内轮 | 最高80 / 0mm/s | 最高100 / 20mm/s |
++| 转向平均编码器位移预算 | 80mm | 120mm |
++| 转向时限 / 角度确认 | 4秒 / ±3°、30ms | 相同 |
++| 入弧 / 捕线速度 | 50mm/s | 相同 |
++| PI 输出上限 | 2200 | 相同 |
++| B→BD 少转量 | 3° | 相同 |
++| 正常中间停稳 / 圈间停车 | 有 | 取消；末圈终点停车 |
++
++双轮前进转向的平移大于 V14 单轮转向，因此任务四位移预算明确从 80 改为 120mm；4秒时限不延长。任务三仍使用原单轮转向、80mm预算和停稳流程。任务四有效性检查限制双轮模式位移预算不得超过120mm。
++
++STOP/OFF、IMU/ADC/UART异常、低压、节拍、超速、反向、堵转、失线/捕线/寻线边界及160秒总时限继续优先停车并锁存。连续运动不覆盖这些异常情形。几何、前置探头实际安装位置、车身对顶点和弧线的覆盖仍需真实场地验证；不通过扩大候选窗口替代覆盖验证。
++
++## 文章参考
++
++用户提供的[《2024年电赛H题自动行驶小车全代码思路讲解》](https://blog.csdn.net/2301_79299887/article/details/141063042)中，采用探头见线/离线事件衔接直线与循迹，并按偏差改变控制参数。参考的是事件换段和按偏差分配速度的思路。本车原有边缘探头降至120mm/s的策略继续保留。
++
++文章为七路灰度、直接PWM方案；本车为LF04四路、MPU6050和双轮编码器PI。因此没有移植其PID数值、固定PWM、定时测距或每段重置yaw的实现。文章示例中的多路独立if会覆盖位置，且全白默认0，不能代替本项目对全白/全黑/离散图样的有效性检查。未复制文章代码。
++
++赛题资料：`/Users/mzh/Desktop/车车/资料/比赛题目/H题_自动行驶小车.pdf`，第2页要求经过顶点时车身投影覆盖顶点、弧线过程中投影覆盖弧线。本版仅在原点位窗口并结合实际探头观测预转，软件测试不能证明实车投影满足条件。
++
++## 软件验证与固件
++
++- 10 类场景、CarApp与兼容API共20组ASan/UBSan回归通过。覆盖四圈16次连续转向、3次A点移动接续、8段入弧、17次提示、正常衔接显式零驱动为0、最终停车以及故障优先级。
++- 新增 C/D 首候选预转、窗口外/全白/全黑不预转、单帧毛刺不误记点、传感器/航向/里程/STOP优先级。
++- 同样巡航速度、160mm轮距、45mm探头提前量的理想输入模型：模拟 V14 停车策略128130ms，V18 FLOW122210ms，约少5.92秒。此对照包含转向100/20与80/0的差异，不是实车预测；模型按给定航向与理想轮速运行，不验证实际轮胎、惯性或轨迹覆盖。
++- PI带死区/滞后的27组电机假设均在120mm预算内完成C点转向，最大90.23mm。该模型用于发现旧积分导致的转向问题，不作为实车拟合。
++- 50 个 ARM 编译单元通过编译、链接。FLASH 56856B，RAM 5864B。HEX 校验和、EOF、版本字符串、FLASH范围与向量检查通过；构建警告为原 `main.c` 未使用诊断变量/函数。
++- 构建脚本 `tools/build_firmware.py`；测试脚本 `tools/tests/run_tests.py`。输出、日志与清单在 `build/Debug/`。
++- HEX SHA256：`9eeab0b7acb77f2b54db94debbefa200582d310901a6f86d57f3633d68a0015c`。
++- ELF SHA256：`9245bf3c749abe674591f05629b015063ce7d595eae67d11e61cd58e2ccff467`。
++
++本版只有软件验证与构建完成，未烧录、未启动电机、未进行实车验收。部署时使用本版HEX并核对 `TASK 4 V18 FLOW` 标题，不选历史归档V14固件。
+diff --git a/tools/build_firmware.py b/tools/build_firmware.py
+new file mode 100644
+index 0000000..e4b9bc1
+--- /dev/null
++++ b/tools/build_firmware.py
+@@ -0,0 +1,137 @@
++#!/usr/bin/env python3
++"""Build all firmware units with GCC; no flashing or hardware access."""
++from pathlib import Path
++import argparse
++import hashlib
++import json
++import shlex
++import shutil
++import subprocess
++
++ROOT = Path(__file__).resolve().parents[1]
++SOURCES = [
++    "Core/Src/adc.c",
++    "Core/Src/car_app.c",
++    "Core/Src/car_button.c",
++    "Core/Src/car_command.c",
++    "Core/Src/car_heading.c",
++    "Core/Src/car_line.c",
++    "Core/Src/car_pi.c",
++    "Core/Src/car_power.c",
++    "Core/Src/car_route.c",
++    "Core/Src/car_signal.c",
++    "Core/Src/car_task3.c",
++    "Core/Src/car_task3_port.c",
++    "Core/Src/car_task4.c",
++    "Core/Src/car_ui.c",
++    "Core/Src/car_wheel.c",
++    "Core/Src/dual_pi_test.c",
++    "Core/Src/gpio.c",
++    "Core/Src/lab_uart_async.c",
++    "Core/Src/left_pi_test.c",
++    "Core/Src/main.c",
++    "Core/Src/mpu6050.c",
++    "Core/Src/right_p_test.c",
++    "Core/Src/soft_i2c.c",
++    "Core/Src/stm32f1xx_hal_msp.c",
++    "Core/Src/stm32f1xx_it.c",
++    "Core/Src/syscalls.c",
++    "Core/Src/sysmem.c",
++    "Core/Src/system_stm32f1xx.c",
++    "Core/Src/task_oled.c",
++    "Core/Src/tim.c",
++    "Core/Src/usart.c",
++    "Core/Src/wheel_speed_diag.c",
++    "Core/Src/yaw_diag.c",
++    "Core/Startup/startup_stm32f103rctx.s",
++    "Drivers/STM32F1xx_HAL_Driver/Src/stm32f1xx_hal.c",
++    "Drivers/STM32F1xx_HAL_Driver/Src/stm32f1xx_hal_adc.c",
++    "Drivers/STM32F1xx_HAL_Driver/Src/stm32f1xx_hal_adc_ex.c",
++    "Drivers/STM32F1xx_HAL_Driver/Src/stm32f1xx_hal_cortex.c",
++    "Drivers/STM32F1xx_HAL_Driver/Src/stm32f1xx_hal_dma.c",
++    "Drivers/STM32F1xx_HAL_Driver/Src/stm32f1xx_hal_exti.c",
++    "Drivers/STM32F1xx_HAL_Driver/Src/stm32f1xx_hal_flash.c",
++    "Drivers/STM32F1xx_HAL_Driver/Src/stm32f1xx_hal_flash_ex.c",
++    "Drivers/STM32F1xx_HAL_Driver/Src/stm32f1xx_hal_gpio.c",
++    "Drivers/STM32F1xx_HAL_Driver/Src/stm32f1xx_hal_gpio_ex.c",
++    "Drivers/STM32F1xx_HAL_Driver/Src/stm32f1xx_hal_pwr.c",
++    "Drivers/STM32F1xx_HAL_Driver/Src/stm32f1xx_hal_rcc.c",
++    "Drivers/STM32F1xx_HAL_Driver/Src/stm32f1xx_hal_rcc_ex.c",
++    "Drivers/STM32F1xx_HAL_Driver/Src/stm32f1xx_hal_tim.c",
++    "Drivers/STM32F1xx_HAL_Driver/Src/stm32f1xx_hal_tim_ex.c",
++    "Drivers/STM32F1xx_HAL_Driver/Src/stm32f1xx_hal_uart.c"
++]
++
++def main():
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument('--cc', help='Path to arm-none-eabi-gcc')
++    args = parser.parse_args()
++    candidates = sorted(Path('/Applications/STM32CubeIDE.app/Contents/Eclipse/plugins').glob(
++        'com.st.stm32cube.ide.mcu.externaltools.gnu-tools-for-stm32.*/tools/bin/arm-none-eabi-gcc'))
++    compiler = args.cc or (str(candidates[-1]) if candidates else None) or shutil.which('arm-none-eabi-gcc')
++    if not compiler:
++        parser.error('arm-none-eabi-gcc not found; provide --cc')
++    compiler = Path(compiler).resolve()
++    out = ROOT / 'build/Debug'
++    out.mkdir(parents=True, exist_ok=True)
++    common = ['-ICore/Inc', '-IDrivers/STM32F1xx_HAL_Driver/Inc',
++        '-IDrivers/STM32F1xx_HAL_Driver/Inc/Legacy', '-IDrivers/CMSIS/Device/ST/STM32F1xx/Include',
++        '-IDrivers/CMSIS/Include', '-mcpu=cortex-m3', '-mthumb', '-g',
++        '--specs=nano.specs', '--specs=nosys.specs', '-DDEBUG']
++    objects, commands = [], []
++    with (out / 'arm_build.log').open('w') as log:
++        for source in SOURCES:
++            obj = 'build/Debug/.obj/' + str(Path(source).with_suffix('.o'))
++            (ROOT / obj).parent.mkdir(parents=True, exist_ok=True)
++            flags = ['-x', 'assembler-with-cpp'] if source.endswith('.s') else [
++                '-xc', '-std=c11', '-DUSE_HAL_DRIVER', '-DSTM32F103xE', '-Og', '-Wall',
++                '-ffunction-sections', '-fdata-sections', '-funsigned-char']
++            command = [str(compiler), '-c'] + flags + common + ['-o', obj, '-MMD', source]
++            print('BUILD ' + source, file=log, flush=True)
++            subprocess.run(command, cwd=ROOT, stdout=log, stderr=log, check=True)
++            objects.append(obj)
++            commands.append({'directory': str(ROOT), 'file': str(ROOT/source), 'command': shlex.join(command)})
++        (out/'compile_commands.json').write_text(json.dumps(commands, indent=2)+'\n')
++        link = [str(compiler), '-mcpu=cortex-m3', '-mthumb', '-T', 'STM32F103RCTX_FLASH.ld',
++            '-Wl,--gc-sections', '-Wl,--print-memory-usage', '-Wl,-Map=build/Debug/Sunward.map',
++            '--specs=nano.specs', '--specs=nosys.specs', '-o', 'build/Debug/Sunward.elf'] + objects + ['-lm']
++        subprocess.run(link, cwd=ROOT, stdout=log, stderr=log, check=True)
++        subprocess.run([str(compiler.parent/'arm-none-eabi-objcopy'), '-O', 'ihex',
++            str(out/'Sunward.elf'), str(out/'Sunward.hex')], cwd=ROOT, check=True)
++        size = subprocess.check_output([str(compiler.parent/'arm-none-eabi-size'), str(out/'Sunward.elf')], text=True)
++        print(size, file=log)
++    rows = (out/'Sunward.hex').read_text().splitlines()
++    memory, base, eof = {}, 0, 0
++    for n, row in enumerate(rows):
++        assert row.startswith(':')
++        b = bytes.fromhex(row[1:])
++        assert len(b)==b[0]+5 and sum(b)%256==0
++        kind, address, payload = b[3], int.from_bytes(b[1:3], 'big'), b[4:-1]
++        if kind==4: base=int.from_bytes(payload, 'big')<<16
++        elif kind==0:
++            for offset, value in enumerate(payload): memory[base+address+offset]=value
++        elif kind==1: eof+=1; assert n==len(rows)-1
++    assert eof==1 and min(memory)==0x08000000 and max(memory)<0x08040000
++    image=bytes(memory.get(a,255) for a in range(min(memory),max(memory)+1))
++    assert b'TASK 4 V18 FLOW' in image and b'TASK 3 V3 GYRO' in image
++    assert 0x20000000 < int.from_bytes(image[:4], 'little') <= 0x2000C000
++    reset=int.from_bytes(image[4:8], 'little')
++    assert reset & 1 and 0x08000000 <= (reset & ~1) < 0x08040000
++    manifest={'base_branch':'codex/task4-v14-pwm22',
++        'base_commit':'242b647ed1a8470ea77b5fc2576e4198fb08c912',
++        'task4_title':'TASK 4 V18 FLOW', 'units_compiled':len(SOURCES),
++        'diagonal_mmps':270, 'arc_mmps':240, 'entry_mmps':50, 'task4_max_cmd':2200,
++        'preview':'first valid C/D candidate inside original window; 30ms point confirmation',
++        'continuous_motion':True, 'turn_inner_mmps':20, 'turn_outer_mmps':100,
++        'turn_limit_mm':120, 'turn_limit_ms':4000,
++        'hex_checksum_eof_titles_vectors_valid':True, 'size':size,
++        'field_verified':False, 'flashed':False,
++        'sha256':{n:hashlib.sha256((out/n).read_bytes()).hexdigest() for n in ['Sunward.elf','Sunward.hex']},
++        'source_sha256':{n:hashlib.sha256((ROOT/n).read_bytes()).hexdigest() for n in
++            SOURCES + sorted(str(p.relative_to(ROOT)) for p in (ROOT/'Core/Inc').glob('*.h')) + ['STM32F103RCTX_FLASH.ld']}}
++    (out/'manifest.json').write_text(json.dumps(manifest,ensure_ascii=False,indent=2)+'\n')
++    print(size.strip())
++    print('PASS: all ARM units linked; HEX checksums, EOF, version titles, vectors verified. No flashing.')
++
++if __name__=='__main__':
++    main()
+diff --git a/tools/tests/run_tests.py b/tools/tests/run_tests.py
+index e5bff5f..431a042 100644
+--- a/tools/tests/run_tests.py
++++ b/tools/tests/run_tests.py
+@@ -21,7 +21,7 @@ flags = [os.environ.get('CC', 'cc'), '-std=c11', '-Wall', '-Wextra', '-Werror',
+ if args.sanitize:
+     flags += ['-fsanitize=address,undefined', '-fno-omit-frame-pointer']
+ with tempfile.TemporaryDirectory(prefix='sunward-host-tests-') as folder:
+-    for suite in ['motion', 'task2', 'task3', 'task4', 'seek', 'turn', 'heading', 'entry']:
++    for suite in ['motion', 'task2', 'task3', 'task4', 'seek', 'turn', 'heading', 'entry', 'continuous', 'preview']:
+         for public in [False, True]:
+             name = suite + ('_car_app' if public else '_legacy_api')
+             binary = str(Path(folder) / name)
+@@ -38,4 +38,4 @@ with tempfile.TemporaryDirectory(prefix='sunward-host-tests-') as folder:
+                 print(result.stdout + result.stderr, flush=True)
+                 result.check_returncode()
+             print(name + ': ' + result.stdout.strip())
+-print('PASS: motion/task2/task3/task4/seek/turn/heading/entry regressions; CarApp and compatibility APIs; separate module linkage.')
++print('PASS: motion/task2/task3/task4/seek/turn/heading/entry/continuous/preview regressions; CarApp and compatibility APIs; separate module linkage.')
+diff --git a/tools/tests/test_continuous.c b/tools/tests/test_continuous.c
+new file mode 100644
+index 0000000..159a082
+--- /dev/null
++++ b/tools/tests/test_continuous.c
+@@ -0,0 +1,312 @@
++/* Full production Task4 continuity. Synthetic inputs, no hardware access. */
++#define CAR_TASK3_TEST_MAIN legacy_task3_main
++#include "test_task3.c"
++#undef CAR_TASK3_TEST_MAIN
++
++static void continuous_start(void)
++{
++ setup();line_inputs=15;hold();hold();hold();hold();calibrate();enable();press_key();
++ assert(app()->runtime.state==RUNNING && app()->route.motion==MOVE_TASK4);
++ assert(app()->route.task3.config.continuous_motion && app()->route.task3.config.rolling_entry);
++ assert(app()->route.task3.config.turn_inner_mmps==20 && app()->route.task3.config.turn_travel_limit_mm==120);
++ assert(app()->route.targets[0]>0 && app()->route.targets[1]>0 && a>0 && b<0);
++}
++
++static void reach_continuous(unsigned lap,unsigned leg,CarTask3Phase phase)
++{
++ for(unsigned n=0;n<14000 && app()->runtime.state==RUNNING &&
++     !(app()->route.task4.completed_laps==lap && app()->route.task3.leg==leg && app()->route.task3.phase==phase);n++)step_route();
++ assert(app()->runtime.state==RUNNING && app()->route.task4.completed_laps==lap &&
++  app()->route.task3.leg==leg && app()->route.task3.phase==phase);
++}
++
++static unsigned zero_handoffs;
++static void (*motor_before_monitor)(int,int);
++static void monitor_motor(int ac,int bc)
++{
++ CarTask3Phase p=app()->route.task3.phase;
++ if(app()->runtime.state==RUNNING && p!=T3_FINAL_BRAKE && p!=T3_DONE && p!=T3_FAULT &&
++    app()->route.targets[0]+app()->route.targets[1]==0 && ac==0 && bc==0)++zero_handoffs;
++ motor_before_monitor(ac,bc);
++}
++
++static void four_lap_regression(void)
++{
++ continuous_start();motor_before_monitor=app()->runtime.drive;app()->runtime.drive=monitor_motor;zero_handoffs=0;
++ float residue[2]={0,0},reference=app()->route.task4.ac_reference_deg;
++ unsigned previous_laps=0,joins=0,turns=0;CarTask3Phase previous=T3_IDLE;
++ for(unsigned n=0;n<16500 && app()->runtime.state==RUNNING;n++) {
++  CarTask3 *t=&app()->route.task3;float p=progress();
++  if(t->phase==T3_DIAGONAL) {
++   app()->heading.angle=CarMath_WrapDegrees(t->start_heading_deg+
++    (t->leg==2?180+2*t->diagonal_angle_deg-t->config.bd_turn_relief_deg:0));
++   line_inputs=p>=t->diagonal_mm?9:15;
++  } else if(t->phase==T3_ARC) {
++   line_inputs=p>=t->config.arc_mm?15:9;
++   app()->heading.angle=CarMath_WrapDegrees(t->start_heading_deg+t->diagonal_angle_deg+
++    (t->leg==1?fminf(p/t->config.arc_mm,1)*180:180-fminf(p/t->config.arc_mm,1)*180));
++  } else if(t->phase==T3_CAPTURE || t->phase==T3_ARC_ENTRY)line_inputs=9;
++  else if(t->phase==T3_ALIGN || t->phase==T3_START_ALIGN || t->phase==T3_VERTEX_SEEK) {
++   if(t->phase==T3_VERTEX_SEEK)line_inputs=p>=t->diagonal_mm?9:15;
++   app()->heading.angle=CarMath_WrapDegrees(app()->heading.angle+
++    (app()->route.targets[1]-app()->route.targets[0])*.01f/160*57.2957795131f);
++  }
++  if(t->phase!=previous && (t->phase==T3_ALIGN || t->phase==T3_START_ALIGN))++turns;
++  previous=t->phase;
++  assert(t->phase!=T3_VERTEX_BRAKE && t->phase!=T3_ALIGN_SETTLE && t->phase!=T3_START_SETTLE);
++  int counts[2];
++  for(unsigned w=0;w<2;w++) {
++   float target=app()->route.targets[w];
++   if(t->phase!=T3_FINAL_BRAKE)assert(target>0 && target<=336);
++   residue[w]+=target*.01f*(w?DPT_RIGHT_CPR:DPT_LEFT_CPR)/(DPT_CIRC_M*1000);
++   counts[w]=(int)residue[w];residue[w]-=counts[w];
++  }
++  step(10,counts[0],counts[1]);
++  if(app()->route.task4.completed_laps>previous_laps && app()->route.task4.completed_laps<4) {
++   ++joins;assert(app()->route.task3.phase==T3_START_ALIGN);
++   assert(app()->route.targets[0]>0 && app()->route.targets[1]>0);
++   assert(!app()->route.task3.pending_start_signal && app()->route.task3.start_heading_deg==reference);
++  }
++  previous_laps=app()->route.task4.completed_laps;
++  assert(a>=0 && b<=0);
++ }
++ if(app()->runtime.state!=DONE) {
++  const CarTask3 *t=&app()->route.task3;
++  fprintf(stderr,"continuous run: state=%d phase=%d fault=%d laps=%u arcs=%u ms=%lu turn_ms=%lu travel=%.2f progress=%.2f yaw=%.2f target=%.2f\n",
++   app()->runtime.state,t->phase,t->fault,app()->route.task4.completed_laps,app()->route.task4.arc_number,
++   (unsigned long)app()->route.elapsed_ms,(unsigned long)(ms-t->phase_ms),
++   (app()->route.distance_mm[0]+app()->route.distance_mm[1])*.5f-t->phase_start_mm,
++   progress(),app()->heading.angle,app()->heading.reference);
++ }
++ assert(app()->runtime.state==DONE && app()->route.task4.completed_laps==4 && app()->route.task4.arc_number==8);
++ assert(joins==3 && turns==16 && signals==17 && zero_handoffs==0 && a==0 && b==0);
++ assert(app()->route.elapsed_ms<160000);
++ printf("IDEAL continuous four-lap schedule: %lu ms; target-following/160mm track, not field acceptance.\n",(unsigned long)app()->route.elapsed_ms);
++ app()->runtime.drive=motor_before_monitor;
++}
++
++static void dual_turn_regression(void)
++{
++ continuous_start();CarTask3Output out={.control=T3_TURN_FORWARD,.heading_deg=0,.left_mmps=80,.right_mmps=20};
++ app()->heading.angle=30;CarTask3Port_Apply(app(),&out,ms);
++ assert(app()->route.targets[0]==80 && app()->route.targets[1]==20);
++ app()->heading.angle=7.5f;CarTask3Port_Apply(app(),&out,ms);
++ assert(app()->route.targets[0]==55 && app()->route.targets[1]==20);
++ out.left_mmps=20;out.right_mmps=80;app()->heading.angle=-7.5f;CarTask3Port_Apply(app(),&out,ms);
++ assert(app()->route.targets[0]==20 && app()->route.targets[1]==55);
++ /* A, B, C, D all confirm angles with moving wheels and emit motion
++    on the same update that enters the next straight/capture phase. */
++ for(unsigned leg=0;leg<4;leg++) {
++  CarTask3Config c=CarTask4_Config();CarTask3 t={0};CarTask3Output o;
++  CarTask3Input in={.enabled=1,.heading_ready=1,.now_ms=1000};assert(CarTask3_Start(&t,&c,&in));
++  t.leg=leg;t.phase=leg?T3_ALIGN:T3_START_ALIGN;t.pending_start_signal=0;
++  float target=CarMath_WrapDegrees(t.start_heading_deg+(leg==0?0:
++   (leg==2?180+2*t.diagonal_angle_deg-c.bd_turn_relief_deg:t.diagonal_angle_deg+(leg==3?180:0))));
++  in.yaw_deg=CarMath_WrapDegrees(target-8);in.left_mmps=in.right_mmps=50;
++  in.now_ms+=10;CarTask3_Update(&t,&in,&o);
++  assert(o.control==T3_TURN_FORWARD && o.left_mmps>0 && o.right_mmps>0 && !o.reset_controllers);
++  in.yaw_deg=target;
++  for(unsigned n=0;n<4;n++){in.now_ms+=10;CarTask3_Update(&t,&in,&o);assert(o.control!=T3_HALT && !o.reset_controllers);}
++  assert(t.phase==(leg&1?T3_CAPTURE:T3_DIAGONAL));
++ }
++}
++
++static void moving_recovery_regression(void)
++{
++ continuous_start();reach_continuous(0,1,T3_ARC);line_inputs=9;step(10,30,30);
++ line_inputs=15;step(10,30,30);uint32_t lost=app()->route.task3.lost_start_ms;
++ assert(app()->route.task3.loss_seek && app()->route.targets[0]>0 && app()->route.targets[1]>0);
++ line_inputs=9;
++ for(unsigned n=0;n<3;n++) {
++  step(10,30,30);assert(app()->runtime.state==RUNNING && app()->route.task3.lost_seen);
++  assert(app()->route.targets[0]>0 && app()->route.targets[1]>0 && app()->route.task3.lost_start_ms==lost);
++ }
++ step(10,30,30);assert(!app()->route.task3.lost_seen && app()->route.task3.phase==T3_ARC);
++ /* Fresh all-white loss with one-frame glitches cannot renew its500ms deadline. */
++ line_inputs=15;step(10,30,30);lost=app()->route.task3.lost_start_ms;
++ for(unsigned n=0;n<49;n++) {
++  line_inputs=n%2?15:9;step(10,30,30);
++  assert(app()->runtime.state==RUNNING && app()->route.task3.lost_start_ms==lost);
++ }
++ step(10,30,30);assert(app()->runtime.state==LINE_LOST && a==0 && b==0);
++ /* Non-white invalid patterns still stop; continuous is not blind driving. */
++ for(unsigned pattern=0;pattern<2;pattern++) {
++  continuous_start();reach_continuous(0,1,T3_ARC);line_inputs=pattern?5:0;
++  step(10,30,30);assert(a==0 && b==0 && !app()->route.task3.loss_seek);
++  for(unsigned n=0;n<20;n++)step(10,0,0);
++  assert(app()->runtime.state==LINE_LOST);
++ }
++ /* The missing-vertex search has moving angle confirmation too. */
++ CarTask3Config c=CarTask4_Config();CarTask3 t={0};CarTask3Output o;
++ CarTask3Input in={.enabled=1,.heading_ready=1,.now_ms=1000};assert(CarTask3_Start(&t,&c,&in));
++ t.phase=T3_VERTEX_SEEK;t.pending_start_signal=0;in.distance_mm=t.diagonal_mm;t.phase_start_mm=in.distance_mm;
++ in.yaw_deg=CarMath_WrapDegrees(t.start_heading_deg+t.diagonal_angle_deg);
++ in.left_mmps=in.right_mmps=40;
++ for(unsigned n=0;n<4;n++){in.now_ms+=10;CarTask3_Update(&t,&in,&o);assert(o.control==T3_HOLD_HEADING && o.base_mmps==40);}
++ assert(t.seek_aligned);
++}
++
++static void fault_regression(void)
++{
++ for(unsigned event=0;event<12;event++) {
++  continuous_start();reach_continuous(0,2,T3_ALIGN);
++  TestState expected=STOPPED;
++  switch(event) {
++  case 0:queue(0,"STOP!TASK4!");break;
++  case 1:off=1;expected=OFF;break;
++  case 2:imu_fail=1;expected=YAW_BAD;break;
++  case 3:adc_fail=1;app()->power.sample_ms=ms-100;expected=ADC_BAD;break;
++  case 4:bat=1000;app()->power.sample_ms=ms-100;expected=LOW;break;
++  case 5:faults[0]=1;expected=UART_BAD;break;
++  case 6:step(30,30,30);expected=GAP;break;
++  case 7:step(10,2000,0);expected=FAST;break;
++  case 8:for(unsigned n=0;n<5;n++)step(10,-177,176);expected=REVERSE;break;
++  case 9:for(unsigned n=0;n<60 && app()->runtime.state==RUNNING;n++)step(10,0,0);expected=STALL;break;
++  case 10:app()->route.task3.phase_ms=ms-4000;expected=YAW_BAD;break;
++  case 11:app()->route.task3.phase_start_mm-=121;expected=YAW_BAD;break;
++  }
++  step(10,0,0);assert(app()->runtime.state==expected && a==0 && b==0);
++  for(unsigned n=0;n<5;n++)step(10,0,0);assert(app()->runtime.state==expected && a==0 && b==0);
++ }
++ continuous_start();reach_continuous(1,0,T3_START_ALIGN);app()->route.start_ms=ms-160000;
++ step(10,30,30);assert(app()->runtime.state==TIMEOUT && a==0 && b==0 && app()->route.task4.completed_laps==1);
++ /* Moving lap restart rejects missing sensors/STOP before emitting output. */
++ for(unsigned event=0;event<3;event++) {
++  CarTask3Config c=CarTask4_Config();CarTask3 t={0};CarTask3Output out;
++  CarTask3Input in={.enabled=1,.heading_ready=1};assert(CarTask3_Start(&t,&c,&in));
++  t.phase=T3_DONE;in.left_mmps=in.right_mmps=50;
++  if(event==0)in.stop_requested=1;else if(event==1)in.sample_age_ms=21;else in.heading_ready=0;
++  assert(!CarTask3_NextLap(&t,&in,&out) && t.phase==T3_FAULT && out.control==T3_HALT);
++ }
++}
++
++/* Retain measured pre-C speed/integral state; close the plant around the
++   actual PI outputs, rather than assuming wheels instantly follow targets.
++   The motor gain/dead zone/lag are sensitivity assumptions, not a vehicle fit. */
++static int c_handoff_plant(int legacy,float gain,float deadband,float lag,
++    float *turn_mm,float *error_deg)
++{
++ continuous_start();CarTask3 *t=&app()->route.task3;
++ t->phase=T3_DIAGONAL;t->leg=0;t->leg_start_mm=t->phase_start_mm=0;
++ t->phase_ms=ms-4000;t->pending_start_signal=0;
++ float distance=t->diagonal_mm-50,yaw=t->start_heading_deg,turn_origin=0;
++ float velocity[2]={215.45717f,216.18494f};
++ app()->route.targets[0]=195.13977f;app()->route.targets[1]=195.82629f;
++ app()->wheel.items[0].integral=1881.1471f;app()->wheel.items[1].integral=1868.4648f;
++ app()->wheel.items[0].command=1231;app()->wheel.items[1].command=1217;
++ app()->line.valid=1;app()->line.count=2;app()->line.error=0;
++ for(unsigned n=0;n<500;n++) {
++  ms+=10;distance+=(velocity[0]+velocity[1])*.005f;
++  yaw=CarMath_WrapDegrees(yaw+(velocity[1]-velocity[0])*.01f/160*57.2957795131f);
++  CarTask3Input in={.now_ms=ms,.distance_mm=distance,.yaw_deg=yaw,
++   .left_mmps=velocity[0],.right_mmps=velocity[1],.heading_ready=1,
++   .line_valid=1,.black_count=2,.centered=1,.enabled=1};
++  CarTask3Phase previous=t->phase;
++  CarTask3Output out;CarTask4_Update(&app()->route.task4,t,&in,&out);
++  if(previous!=T3_ALIGN && t->phase==T3_ALIGN)turn_origin=t->phase_start_mm;
++  if(t->phase==T3_FAULT) {
++   assert(t->fault==T3_TURN);CarApp_Stop(app(),CarTask3Port_StopState(t->fault),'-');
++   *turn_mm=distance-turn_origin;*error_deg=CarMath_WrapDegrees(t->start_heading_deg+t->diagonal_angle_deg-yaw);
++   assert(a==0 && b==0);return 0;
++  }
++  if(legacy)out.retarget_integrals=0;
++  app()->heading.angle=yaw;
++  for(unsigned w=0;w<2;w++)app()->wheel.items[w].velocity=velocity[w];
++  assert(out.control!=T3_HALT && !out.reset_controllers);
++  CarTask3Port_Apply(app(),&out,ms);
++  assert(app()->route.targets[0]>0 && app()->route.targets[1]>0);
++  for(unsigned w=0;w<2;w++)CarWheel_Control(app(),w,.01f);
++  assert(app()->runtime.state==RUNNING);
++  app()->runtime.drive(app()->wheel.items[0].command,-app()->wheel.items[1].command);
++  if(t->phase==T3_CAPTURE) {
++   *turn_mm=distance-turn_origin;
++   *error_deg=CarMath_WrapDegrees(t->start_heading_deg+t->diagonal_angle_deg-yaw);
++   return 1;
++  }
++  for(unsigned w=0;w<2;w++) {
++   float steady=gain*fmaxf(0,(float)app()->wheel.items[w].command-deadband);
++   velocity[w]+=(steady-velocity[w])*(1-expf(-.01f/lag));
++   assert(velocity[w]>0);
++  }
++ }
++ assert(0 && "C turn neither completes nor faults within watchdog");return 0;
++}
++
++static void handoff_regression(void)
++{
++ float mm,error;
++ int old=c_handoff_plant(1,.15f,250,.08f,&mm,&error);
++ printf("OLD C motor model: pass=%d mm=%.2f error=%.2f\n",old,mm,error);
++ int fixed=c_handoff_plant(0,.15f,250,.08f,&mm,&error);
++ printf("FIX C motor model: pass=%d mm=%.2f error=%.2f\n",fixed,mm,error);
++ assert(!old && fixed);
++ const float gains[]={.12f,.15f,.18f},deadbands[]={150,250,350},lags[]={.05f,.08f,.11f};
++ float maximum=0;unsigned count=0;
++ for(unsigned g=0;g<3;g++)for(unsigned d=0;d<3;d++)for(unsigned lidx=0;lidx<3;lidx++) {
++  int passed=c_handoff_plant(0,gains[g],deadbands[d],lags[lidx],&mm,&error);
++  if(!passed)fprintf(stderr,"C model gain=%.2f dead=%.0f lag=%.2f mm=%.2f error=%.2f\n",gains[g],deadbands[d],lags[lidx],mm,error);
++  assert(passed && mm<=120 && fabsf(error)<=3);maximum=fmaxf(maximum,mm);++count;
++ }
++ printf("C handoff: %u motor assumptions pass, maximum turn travel %.2f mm; software model only.\n",count,maximum);
++}
++
++static void integral_transfer_regression(void)
++{
++ continuous_start();
++ CarTask3Output out={.control=T3_HOLD_HEADING,.heading_deg=app()->heading.angle,
++  .base_mmps=50,.retarget_integrals=1};
++ for(unsigned w=0;w<2;w++) {
++  app()->route.targets[w]=200;app()->wheel.items[w].integral=1800;
++  app()->wheel.items[w].bad_sign_us=20000;app()->wheel.items[w].stall_us=300000;
++ }
++ int before_a=a,before_b=b;CarTask3Port_Apply(app(),&out,ms);
++ for(unsigned w=0;w<2;w++) {
++  assert(app()->route.targets[w]==50 && app()->wheel.items[w].integral==450);
++  assert(app()->wheel.items[w].bad_sign_us==20000 && app()->wheel.items[w].stall_us==300000);
++ }
++ assert(a==before_a && b==before_b); /* no drive(0,0) pulse */
++ out.control=T3_TURN_FORWARD;out.heading_deg=CarMath_WrapDegrees(app()->heading.angle+30);
++ out.left_mmps=20;out.right_mmps=80;CarTask3Port_Apply(app(),&out,ms);
++ assert(app()->wheel.items[0].integral==180 && app()->wheel.items[1].integral==450);
++ assert(app()->route.targets[0]==20 && app()->route.targets[1]==80);
++ out.retarget_integrals=0;CarTask3Port_Apply(app(),&out,ms);
++ assert(app()->wheel.items[0].integral==180 && app()->wheel.items[1].integral==450);
++ for(unsigned w=0;w<2;w++){app()->route.targets[w]=50;app()->wheel.items[w].integral=450;}
++ out.retarget_integrals=1;out.heading_deg=CarMath_WrapDegrees(app()->heading.angle-30);
++ out.left_mmps=80;out.right_mmps=20;CarTask3Port_Apply(app(),&out,ms);
++ assert(app()->wheel.items[0].integral==450 && app()->wheel.items[1].integral==180);
++ /* Task3 and the optional parked Task4 profile retain their prior PI behavior. */
++ for(unsigned mode=0;mode<2;mode++) {
++  app()->route.motion=mode?MOVE_TASK4:MOVE_TASK3;app()->route.task3.config.continuous_motion=0;
++  for(unsigned w=0;w<2;w++){app()->route.targets[w]=200;app()->wheel.items[w].integral=1800;}
++  CarTask3Port_Apply(app(),&out,ms);
++  assert(app()->wheel.items[0].integral==1800 && app()->wheel.items[1].integral==1800);
++ }
++ /* One transfer on entering low-speed confirmation and one on starting
++    the turn; ordinary samples retain their integral. */
++ CarTask3Config cfg=CarTask4_Config();CarTask3 route={0};
++ CarTask3Input in={.now_ms=1000,.enabled=1,.heading_ready=1};
++ assert(CarTask3_Start(&route,&cfg,&in));
++ route.phase=T3_DIAGONAL;route.pending_start_signal=0;
++ in.distance_mm=route.diagonal_mm-50;in.yaw_deg=route.start_heading_deg;
++ in.line_valid=in.centered=1;in.black_count=2;in.left_mmps=in.right_mmps=100;
++ for(unsigned n=0;n<5;n++) {
++  in.now_ms+=10;CarTask3_Update(&route,&in,&out);
++  assert(out.retarget_integrals==(n==0 || n==3));
++  assert(!out.reset_controllers && out.control!=T3_HALT);
++ }
++ assert(route.phase==T3_ALIGN);
++}
++
++int main(void)
++{
++ CarTask3Config c=CarTask4_Config();assert(CarTask3_ConfigValid(&c));
++ c.continuous_motion=2;assert(!CarTask3_ConfigValid(&c));
++ c=CarTask4_Config();c.turn_inner_mmps=0;assert(!CarTask3_ConfigValid(&c));
++ c=CarTask4_Config();c.turn_inner_mmps=NAN;assert(!CarTask3_ConfigValid(&c));
++ c=CarTask4_Config();c.turn_travel_limit_mm=121;assert(!CarTask3_ConfigValid(&c));
++ assert(!CarRoute_Task3Config().continuous_motion && CarRoute_Task3Config().turn_travel_limit_mm==80);
++ integral_transfer_regression();handoff_regression();four_lap_regression();dual_turn_regression();moving_recovery_regression();fault_regression();
++ puts("PASS: production Task4 continuous A/B/C/D and3 rolling lap joins, both wheels positive through16 turns, no normal zero-drive handoffs, final settled completion, bounded moving recovery/search and retained fault stops. Software only.");
++ return 0;
++}
+diff --git a/tools/tests/test_entry.c b/tools/tests/test_entry.c
+index bbef483..a13a0ab 100644
+--- a/tools/tests/test_entry.c
++++ b/tools/tests/test_entry.c
+@@ -48,7 +48,8 @@ static void handoff_regression(void)
+   /* Inner single probes can complete entry; a centred pair is not mandatory. */
+   line_inputs=leg==1?13:11;
+   for(unsigned n=0;n<6;n++) {
+-   enter_for(1);assert(a==0 && b==0 && app()->route.task3.lost_start_ms==loss);
++   enter_for(1);assert(a>0 && b<0 && app()->route.task3.lost_start_ms==loss);
++   assert(app()->route.task3.lost_seen); /* Moving confirmation cannot renew the budget. */
+   }
+   step(10,0,0);
+   assert(app()->runtime.state==RUNNING && app()->route.task3.phase==T3_ARC);
+@@ -71,13 +72,18 @@ static void bounds_regression(void)
+  entry_start(1);line_inputs=15;enter_for(1);
+  uint32_t loss=app()->route.task3.lost_start_ms;
+  for(unsigned n=0;n<49;n++) {
+-  line_inputs=n%2?15:9;enter_for(1);
++  line_inputs=n%2?15:9;step(10,30,30);
++  assert(app()->runtime.state==RUNNING && app()->route.task3.phase==T3_ARC_ENTRY);
+   assert(app()->route.task3.lost_start_ms==loss);
+  }
+  line_inputs=9;step(10,0,0);
+  assert(app()->runtime.state==LINE_LOST && app()->route.task3.loss_limits&T3_LOSS_TIME && a==0 && b==0);
+  /* Recovery on the exact deadline cannot outrank the timeout. */
+- entry_start(1);line_inputs=15;enter_for(44);line_inputs=9;enter_for(6);step(10,0,0);
++ entry_start(1);line_inputs=15;
++ for(unsigned n=0;n<44;n++) {
++  step(10,30,30);assert(app()->runtime.state==RUNNING && app()->route.task3.phase==T3_ARC_ENTRY);
++ }
++ line_inputs=9;enter_for(6);step(10,0,0);
+  assert(app()->runtime.state==LINE_LOST && a==0 && b==0);
+  /* Wrong/noncontiguous patterns stop immediately; subsequent white stays stopped. */
+  for(unsigned pattern=0;pattern<2;pattern++) {
+@@ -176,6 +182,100 @@ static void protection_regression(void)
+  assert(t.phase==T3_ARC && out.control==T3_FOLLOW_LINE);
+ }
+ 
++static unsigned flow_zero_requests;
++static void (*flow_motor)(int,int);
++static void monitor_flow_motor(int a_cmd,int b_cmd)
++{
++ CarTask3 *t=&app()->route.task3;
++ if(app()->runtime.state==RUNNING && (t->leg&1U) &&
++    (t->phase==T3_ALIGN || t->phase==T3_CAPTURE || t->phase==T3_ARC_ENTRY) &&
++    app()->route.targets[0]+app()->route.targets[1]==0 && a_cmd==0 && b_cmd==0)
++  ++flow_zero_requests; /* Distinguish explicit HALT from PI coasting above target speed. */
++ flow_motor(a_cmd,b_cmd);
++}
++
++static void rolling_regression(void)
++{
++ assert(CarTask4_Config().rolling_entry && !CarRoute_Task3Config().rolling_entry);
++ CarTask3Config bad=CarTask4_Config();bad.rolling_entry=2;assert(!CarTask3_ConfigValid(&bad));
++ for(unsigned diagonal=0;diagonal<=2;diagonal+=2) {
++  CarTask3Config c=CarTask4_Config();c.start_from_ab=0;
++  CarTask3 t={0};CarTask3Output out;
++  CarTask3Input in={.enabled=1,.heading_ready=1,.now_ms=1000};
++  assert(CarTask3_Start(&t,&c,&in));t.leg=diagonal;t.pending_start_signal=0;
++  in.distance_mm=t.diagonal_mm-40;
++  in.yaw_deg=CarMath_WrapDegrees(t.start_heading_deg+(diagonal?180+2*t.diagonal_angle_deg-c.bd_turn_relief_deg:0));
++  in.left_mmps=in.right_mmps=50;in.line_valid=1;in.black_count=2;in.centered=1;
++  for(unsigned n=0;n<4;n++) {
++   in.now_ms+=10;in.distance_mm+=.5f;CarTask3_Update(&t,&in,&out);
++   assert(out.control!=T3_HALT && !out.reset_controllers);
++   if(n<3)assert(t.phase==T3_DIAGONAL && out.control==T3_TURN_FORWARD && out.left_mmps>0 && out.right_mmps>0);
++  }
++  assert(t.phase==T3_ALIGN && t.leg==diagonal+1 &&
++   out.signal_point==(diagonal?T3_POINT_D:T3_POINT_C));
++  float tangent=CarMath_WrapDegrees(t.start_heading_deg+t.diagonal_angle_deg+(diagonal?180:0));
++  uint32_t turn_start=t.phase_ms;
++  /* Moving angle confirmation still rejects an excursion outside3deg,
++     resets only the debounce, and retains the original turn deadline. */
++  for(unsigned n=0;n<3;n++) {
++   in.yaw_deg=CarMath_WrapDegrees(tangent+2.8f);in.now_ms+=10;
++   CarTask3_Update(&t,&in,&out);assert(t.phase==T3_ALIGN && out.control==T3_HOLD_HEADING);
++  }
++  in.yaw_deg=CarMath_WrapDegrees(tangent+3.2f);in.now_ms+=10;CarTask3_Update(&t,&in,&out);
++  assert(t.phase==T3_ALIGN && !t.edge_seen && t.phase_ms==turn_start && out.control==T3_TURN_FORWARD);
++  for(unsigned n=0;n<4;n++) {
++   in.yaw_deg=tangent;in.now_ms+=10;in.distance_mm+=.5f;CarTask3_Update(&t,&in,&out);
++   assert(out.control==T3_HOLD_HEADING && !out.reset_controllers && out.base_mmps==50);
++   if(n<3)assert(t.phase==T3_ALIGN);
++  }
++  assert(t.phase==T3_CAPTURE && in.left_mmps==50); /* No stopped-wheel prerequisite. */
++  for(unsigned n=0;n<4;n++) {
++   in.now_ms+=10;in.distance_mm+=.5f;CarTask3_Update(&t,&in,&out);
++   assert(out.control!=T3_HALT && !out.reset_controllers);
++  }
++  assert(t.phase==T3_ARC_ENTRY && out.control==T3_ENTER_ARC && out.left_mmps>0 && out.right_mmps>0);
++ }
++ /* Continuous C/D handoff cannot outrank the original turn budgets,
++    stale sensors, STOP/OFF, capture limits or diagonal endpoint window. */
++ for(unsigned event=0;event<8;event++) {
++  CarTask3Config c=CarTask4_Config();CarTask3 t={0};CarTask3Output out;
++  CarTask3Input in={.enabled=1,.heading_ready=1,.now_ms=1000};assert(CarTask3_Start(&t,&c,&in));
++  t.phase=T3_ALIGN;t.leg=3;t.pending_start_signal=0;
++  in.yaw_deg=CarMath_WrapDegrees(t.start_heading_deg+t.diagonal_angle_deg+180);
++  in.line_valid=1;in.black_count=2;in.centered=1;in.left_mmps=in.right_mmps=50;
++  if(event==0)t.phase_ms=in.now_ms-c.align_timeout_ms;
++  else if(event==1)t.phase_start_mm=-c.turn_travel_limit_mm-1;
++  else if(event==2)in.stop_requested=1;
++  else if(event==3)in.enabled=0;
++  else if(event==4)in.sample_age_ms=21;
++  else if(event==5) {t.phase=T3_CAPTURE;t.phase_ms=in.now_ms-c.capture_timeout_ms;}
++  else if(event==6) {t.phase=T3_CAPTURE;t.phase_start_mm=-c.capture_limit_mm-1;}
++  else {
++   t.phase=T3_DIAGONAL;t.leg=2;in.distance_mm=t.diagonal_mm+c.entry_window_mm+1;
++   in.yaw_deg=CarMath_WrapDegrees(t.start_heading_deg+180+2*t.diagonal_angle_deg-c.bd_turn_relief_deg);
++  }
++  in.now_ms+=10;CarTask3_Update(&t,&in,&out);
++  assert(t.phase==T3_FAULT && out.control==T3_HALT && out.reset_controllers);
++ }
++ /* Actual scheduler over all eight joins: no C/D BRAKE/SETTLE phases or
++    explicit zero-drive requests; A/B/final settled stops remain covered. */
++ setup();line_inputs=15;hold();hold();hold();hold();calibrate();enable();press_key();
++ flow_motor=app()->runtime.drive;flow_zero_requests=0;app()->runtime.drive=monitor_flow_motor;
++ unsigned vertices=0;
++ for(unsigned n=0;n<14000 && app()->runtime.state==RUNNING;n++) {
++  unsigned old_leg=app()->route.task3.leg;step_route();CarTask3 *t=&app()->route.task3;
++  if((old_leg==0 || old_leg==2) && t->leg==old_leg+1)++vertices;
++  assert(!(t->phase==T3_VERTEX_BRAKE && !(t->leg&1U)));
++  assert(!(t->phase==T3_ALIGN_SETTLE && (t->leg&1U)));
++  if((t->leg&1U) && (t->phase==T3_ALIGN || t->phase==T3_CAPTURE || t->phase==T3_ARC_ENTRY))
++   assert(app()->route.targets[0]+app()->route.targets[1]>0);
++ }
++ assert(app()->runtime.state==DONE && vertices==8 && flow_zero_requests==0);
++ assert(app()->route.task4.completed_laps==4 && app()->route.task4.arc_number==8 && signals==17);
++ app()->runtime.drive=flow_motor;
++ puts("PASS: eight continuous C/D joins, moving30ms vertex/3deg tangent confirmation, no parked entry/zero-drive handoff, retained budgets/stop priority and unchanged four-lap counting. Software only.");
++}
++
+ int main(void)
+ {
+  CarTask3Config c=CarTask4_Config();assert(CarTask3_ConfigValid(&c));
+@@ -188,7 +288,7 @@ int main(void)
+  c=CarTask4_Config();c.arc_entry_deg=26;assert(!CarTask3_ConfigValid(&c));
+  c=CarTask4_Config();c.arc_entry_mmps=51;assert(!CarTask3_ConfigValid(&c));
+  c=CarTask4_Config();c.arc_entry_ms=0;assert(CarTask3_ConfigValid(&c));
+- handoff_regression();bounds_regression();recorded_onset_regression();protection_regression();
++ handoff_regression();bounds_regression();recorded_onset_regression();protection_regression();rolling_regression();
+  puts("PASS: C/D low-speed arc entry, 200ms minimum/60ms inner-or-centred confirmation, bounded white gaps/chatter, preserved arc distance/counts, exact deadlines, fail-closed patterns/protections and time/yaw wrap. Software only.");
+  return 0;
+ }
+diff --git a/tools/tests/test_heading.c b/tools/tests/test_heading.c
+index 7e19185..e28169e 100644
+--- a/tools/tests/test_heading.c
++++ b/tools/tests/test_heading.c
+@@ -204,7 +204,7 @@ static void bd_distance_regression(void)
+   CarTask3Config cfg=task==4?CarTask4_Config():CarRoute_Task3Config();
+   assert(cfg.bd_full_distance==0);
+   /* Retain coverage of the optional historical full-distance gate. */
+-  cfg.bd_full_distance=task==4;cfg.start_from_ab=0;
++  cfg.bd_full_distance=task==4;cfg.start_from_ab=0;cfg.rolling_entry=cfg.continuous_motion=0;
+   CarTask3 t={0};CarTask3Output out;
+   CarTask3Input in={.now_ms=1000,.heading_ready=1,.enabled=1};
+   assert(CarTask3_Start(&t,&cfg,&in));t.leg=leg;t.pending_start_signal=0;
+@@ -261,8 +261,8 @@ static void bd_distance_regression(void)
+ static void bd_probe_window_regression(void)
+ {
+  /* The reported 1196..1253mm observations precede nominal 1280.6mm.
+-    A candidate within the original window must stop travel immediately,
+-    then remain valid for 30ms; outside-window hits and glitches cannot signal D. */
++    A candidate within the original window starts a low-speed forward turn
++    for 30ms; outside-window hits and glitches still cannot signal D. */
+  for(unsigned count=1;count<=3;count++) {
+   CarTask3Config cfg=CarTask4_Config();cfg.start_from_ab=0;
+   assert(!cfg.bd_full_distance && cfg.b_full_align && cfg.b_align_tolerance_deg==3);
+@@ -278,7 +278,8 @@ static void bd_probe_window_regression(void)
+   }
+   in.distance_mm=1196;
+   in.now_ms+=10;CarTask3_Update(&t,&in,&out);
+-  assert(t.edge_seen && out.control==T3_HALT && out.reset_controllers && out.signal_point==T3_NO_POINT);
++  assert(t.edge_seen && out.control==T3_TURN_FORWARD && !out.reset_controllers && out.signal_point==T3_NO_POINT);
++  assert(out.left_mmps==100 && out.right_mmps==20);
+   in.now_ms+=10;CarTask3_Update(&t,&in,&out);
+   in.line_valid=0;in.black_count=0;
+   in.now_ms+=10;CarTask3_Update(&t,&in,&out);
+@@ -286,14 +287,14 @@ static void bd_probe_window_regression(void)
+   in.distance_mm=1253;in.line_valid=1;in.black_count=count;
+   for(unsigned n=0;n<3;n++) {
+    in.now_ms+=10;CarTask3_Update(&t,&in,&out);
+-   assert(t.phase==T3_DIAGONAL && out.control==T3_HALT && out.reset_controllers && out.signal_point==T3_NO_POINT);
++   assert(t.phase==T3_DIAGONAL && out.control==T3_TURN_FORWARD && !out.reset_controllers && out.signal_point==T3_NO_POINT);
+   }
+   in.now_ms+=10;CarTask3_Update(&t,&in,&out);
+-  assert(t.phase==T3_VERTEX_BRAKE && out.signal_point==T3_POINT_D);
++  assert(t.phase==T3_ALIGN && t.leg==3 && out.signal_point==T3_POINT_D && !out.reset_controllers);
+   assert(in.distance_mm<t.diagonal_mm);
+   in.now_ms+=10;CarTask3_Update(&t,&in,&out);assert(out.signal_point==T3_NO_POINT);
+  }
+- /* Actual foreground scheduler, GPIO decoding, stop output and D snapshot. */
++ /* Actual foreground scheduler, GPIO decoding, forward targets and D snapshot. */
+  setup();line_inputs=15;hold();hold();hold();hold();calibrate();enable();press_key();
+  for(unsigned n=0;n<4500 && !(app()->route.task3.leg==2 && app()->route.task3.phase==T3_DIAGONAL);n++) {
+   assert(app()->runtime.state==RUNNING);step_route();
+@@ -305,13 +306,14 @@ static void bd_probe_window_regression(void)
+  line_inputs=15;step(10,0,0);assert(app()->route.targets[0]>0 && app()->route.targets[1]>0);
+  int before=signals;line_inputs=9;
+  for(unsigned n=0;n<3;n++) {
+-  step(10,0,0);assert(a==0 && b==0 && signals==before && t->phase==T3_DIAGONAL);
++  step(10,0,0);assert(app()->route.targets[0]>0 && app()->route.targets[1]>0 && signals==before && t->phase==T3_DIAGONAL);
+  }
+  step(10,0,0);
+- assert(t->phase==T3_VERTEX_BRAKE && signals==before+1 && a==0 && b==0);
++ assert(t->phase==T3_ALIGN && t->leg==3 && signals==before+1);
++ assert(app()->route.targets[0]+app()->route.targets[1]>0);
+  assert(app()->route.vertex_trace.seen && app()->route.vertex_trace.point==T3_POINT_D);
+  assert(fabsf(app()->route.vertex_trace.distance_mm-1230)<.1f);
+- puts("PASS: default Task4 BD stops for 1/2/3-probe candidates inside endpoint window before nominal length, fresh 30ms debounce after glitches, no out-of-window D, actual GPIO scheduler zero output and D snapshot; B full alignment retained.");
++ puts("PASS: default Task4 BD rolls through 1/2/3-probe candidates inside endpoint window, fresh30ms confirmation after glitches, no out-of-window D, forward scheduler targets and D snapshot; B full-angle confirmation retained.");
+ }
+ 
+ int main(void)
+diff --git a/tools/tests/test_preview.c b/tools/tests/test_preview.c
+new file mode 100644
+index 0000000..045bb36
+--- /dev/null
++++ b/tools/tests/test_preview.c
+@@ -0,0 +1,106 @@
++/* V14-based anticipation: actual core and scheduler, synthetic sensors only. */
++#define CAR_TASK3_TEST_MAIN legacy_task3_main
++#include "test_task3.c"
++#undef CAR_TASK3_TEST_MAIN
++
++static void preview_regression(void)
++{
++ for(unsigned leg=0;leg<=2;leg+=2) {
++  for(unsigned event=0;event<8;event++) {
++   CarTask3Config c=CarTask4_Config();CarTask3 t={0};CarTask3Output o;
++   CarTask3Input in={.now_ms=1000,.enabled=1,.heading_ready=1};
++   assert(CarTask3_Start(&t,&c,&in));
++   t.leg=leg;t.phase=T3_DIAGONAL;t.pending_start_signal=0;
++   in.yaw_deg=CarMath_WrapDegrees(t.start_heading_deg+(leg?180+2*t.diagonal_angle_deg-c.bd_turn_relief_deg:0));
++   in.distance_mm=t.diagonal_mm-50;in.left_mmps=in.right_mmps=160;
++   in.line_valid=in.centered=1;in.black_count=2;
++   if(event==1)in.distance_mm=t.diagonal_mm-c.entry_window_mm-1;
++   if(event==2){in.line_valid=in.centered=0;in.black_count=0;}
++   if(event==3){in.line_valid=in.centered=0;in.black_count=4;}
++   if(event==4)in.stop_requested=1;
++   if(event==5)in.sample_age_ms=21;
++   if(event==6)in.distance_mm=t.diagonal_mm+c.entry_window_mm+1;
++   if(event==7)in.yaw_deg=CarMath_WrapDegrees(in.yaw_deg+21);
++   in.now_ms+=10;CarTask3_Update(&t,&in,&o);
++   if(event>=4) {
++    assert(t.phase==T3_FAULT && o.control==T3_HALT && o.reset_controllers);
++   } else if(event) {
++    assert(t.phase==T3_DIAGONAL && o.control==T3_HOLD_HEADING && !t.edge_seen);
++   } else {
++    assert(t.phase==T3_DIAGONAL && t.leg==leg && o.signal_point==T3_NO_POINT);
++    assert(o.control==T3_TURN_FORWARD && !o.reset_controllers && o.retarget_integrals);
++    assert(o.left_mmps>0 && o.right_mmps>0 && o.left_mmps!=o.right_mmps);
++    assert(leg?o.left_mmps>o.right_mmps:o.left_mmps<o.right_mmps);
++    for(unsigned n=0;n<3;n++) {
++     in.now_ms+=10;CarTask3_Update(&t,&in,&o);
++     assert(o.control==T3_TURN_FORWARD && !o.reset_controllers);
++     assert(o.signal_point==(n==2?(leg?T3_POINT_D:T3_POINT_C):T3_NO_POINT));
++    }
++    assert(t.phase==T3_ALIGN && t.leg==leg+1);
++   }
++  }
++  /* A single candidate cannot report a point or advance the leg. */
++  CarTask3Config c=CarTask4_Config();CarTask3 t={0};CarTask3Output o;
++  CarTask3Input in={.now_ms=1000,.enabled=1,.heading_ready=1};
++  assert(CarTask3_Start(&t,&c,&in));t.phase=T3_DIAGONAL;t.leg=leg;t.pending_start_signal=0;
++  in.yaw_deg=CarMath_WrapDegrees(t.start_heading_deg+(leg?180+2*t.diagonal_angle_deg-c.bd_turn_relief_deg:0));
++  in.distance_mm=t.diagonal_mm-50;in.line_valid=in.centered=1;in.black_count=2;
++  in.now_ms+=10;CarTask3_Update(&t,&in,&o);assert(o.control==T3_TURN_FORWARD);
++  in.line_valid=in.centered=0;in.black_count=0;
++  in.now_ms+=10;CarTask3_Update(&t,&in,&o);
++  assert(t.phase==T3_DIAGONAL && t.leg==leg && !t.edge_seen && o.signal_point==T3_NO_POINT);
++  assert(o.control==T3_HOLD_HEADING && !o.reset_controllers);
++ }
++}
++
++static uint32_t schedule(int parked)
++{
++ setup();line_inputs=15;hold();hold();hold();hold();calibrate();enable();press_key();
++ assert(app()->runtime.state==RUNNING && app()->route.motion==MOVE_TASK4);
++ if(parked) {
++  /* Restore the supplied V14 route profile, including its original turn limit. */
++  CarTask3 *t=&app()->route.task3;
++  t->config.rolling_entry=t->config.continuous_motion=0;
++  t->config.turn_travel_limit_mm=80;
++  t->config.turn_mmps=80;
++  app()->route.targets[0]=80;app()->route.targets[1]=0;
++ }
++ float residue[2]={0,0};
++ for(unsigned n=0;n<16500 && app()->runtime.state==RUNNING;n++) {
++  CarTask3 *t=&app()->route.task3;float p=progress();
++  if(t->phase==T3_DIAGONAL) {
++   app()->heading.angle=CarMath_WrapDegrees(t->start_heading_deg+
++    (t->leg==2?180+2*t->diagonal_angle_deg-t->config.bd_turn_relief_deg:0));
++   line_inputs=p>=t->diagonal_mm-45?9:15;
++  } else if(t->phase==T3_ARC) {
++   line_inputs=p>=t->config.arc_mm?15:9;
++   app()->heading.angle=CarMath_WrapDegrees(t->start_heading_deg+t->diagonal_angle_deg+
++    (t->leg==1?fminf(p/t->config.arc_mm,1)*180:180-fminf(p/t->config.arc_mm,1)*180));
++  } else if(t->phase==T3_CAPTURE || t->phase==T3_ARC_ENTRY)line_inputs=9;
++  else if(t->phase==T3_ALIGN || t->phase==T3_START_ALIGN || t->phase==T3_VERTEX_SEEK) {
++   app()->heading.angle=CarMath_WrapDegrees(app()->heading.angle+
++    (app()->route.targets[1]-app()->route.targets[0])*.01f/160*57.2957795131f);
++  }
++  int counts[2];
++  for(unsigned w=0;w<2;w++) {
++   residue[w]+=app()->route.targets[w]*.01f*(w?DPT_RIGHT_CPR:DPT_LEFT_CPR)/(DPT_CIRC_M*1000);
++   counts[w]=(int)residue[w];residue[w]-=counts[w];
++  }
++  step(10,counts[0],counts[1]);assert(a>=0 && b<=0);
++ }
++ if(app()->runtime.state!=DONE)fprintf(stderr,"preview schedule parked=%d state=%d phase=%d fault=%d laps=%u\n",parked,
++  app()->runtime.state,app()->route.task3.phase,app()->route.task3.fault,app()->route.task4.completed_laps);
++ assert(app()->runtime.state==DONE && app()->route.task4.completed_laps==4 && signals==17 && a==0 && b==0);
++ return app()->route.elapsed_ms;
++}
++
++int main(void)
++{
++ preview_regression();
++ uint32_t before=schedule(1),after=schedule(0);
++ assert(after<before);
++ printf("IDEAL same-cruise four laps, 160mm track, 45mm probe lead: V14=%lu ms FLOW=%lu ms; software schedule only.\n",
++  (unsigned long)before,(unsigned long)after);
++ puts("PASS: C/D first-candidate turn, original window and debounce, no false point on glitches, STOP/sensor/heading/distance priority, four-lap comparison.");
++ return 0;
++}
+diff --git a/tools/tests/test_seek.c b/tools/tests/test_seek.c
+index 43e98aa..ef94b2d 100644
+--- a/tools/tests/test_seek.c
++++ b/tools/tests/test_seek.c
+@@ -9,6 +9,7 @@ static void seek_start(unsigned task)
+  else {
+   setup();line_inputs=15;hold();hold();hold();hold();calibrate();enable();press_key();
+   assert(app()->route.motion==MOVE_TASK4 && app()->runtime.state==RUNNING);
++  app()->route.task3.config.continuous_motion=0; /* Retained stationary recovery profile. */
+   assert(app()->route.task3.config.white_seek_ms==500 && app()->route.task3.config.vertex_seek_ms==3000);
+  }
+ }
+diff --git a/tools/tests/test_task4.c b/tools/tests/test_task4.c
+index 7df1c38..e6e15aa 100644
+--- a/tools/tests/test_task4.c
++++ b/tools/tests/test_task4.c
+@@ -8,7 +8,7 @@ static void task4_select(void)
+  setup();line_inputs=15;hold();hold();hold();hold();
+  assert(app()->button.selected_motion==MOVE_TASK4 && app()->runtime.state!=RUNNING);
+  assert(app()->route.goal>20280 && app()->route.goal<20300);
+- assert(strcmp(oled_lines[0],"TASK 4 V14 PWM22")==0);
++ assert(strcmp(oled_lines[0],"TASK 4 V18 FLOW")==0);
+ }
+ static void task4_start(void)
+ {
+@@ -19,6 +19,8 @@ static void task4_start(void)
+  assert(app()->route.task3.config.deadline_ms==80000U && app()->route.run_duration==160000U);
+  assert(app()->route.task4.completed_laps==0 && app()->route.task4.arc_number==0 && app()->route.task3.phase==T3_START_ALIGN && signals==1);
+  assert(!app()->runtime.bluetooth_on && wp[0]==0 && wp[1]==0);
++ /* Historical parked A/B/lap profile; test_continuous exercises full production defaults. */
++ app()->route.task3.config.continuous_motion=0;
+  /* Retain T27 profile here; default moving recovery is covered by test_seek. */
+  app()->route.task3.config.white_seek_ms=app()->route.task3.config.vertex_seek_ms=0;
+ }
+diff --git a/tools/tests/test_turn.c b/tools/tests/test_turn.c
+index daab760..3f06028 100644
+--- a/tools/tests/test_turn.c
++++ b/tools/tests/test_turn.c
+@@ -14,6 +14,9 @@ static void turn_start(unsigned mode)
+  if(mode==3)task3_start();
+  else {setup();line_inputs=15;hold();hold();hold();hold();calibrate();enable();press_key();}
+  assert(app()->runtime.state==RUNNING);
++ /* Retain the optional parked-turn regression profile. Production C/D
++    moving confirmation is exercised end-to-end by test_entry. */
++ if(mode==4)app()->route.task3.config.rolling_entry=app()->route.task3.config.continuous_motion=0;
+ }
+ static void settle_at(float angle,CarTask3Phase aligning,CarTask3Phase settled)
+ {
+@@ -30,7 +33,7 @@ static void settle_at(float angle,CarTask3Phase aligning,CarTask3Phase settled)
+ static void vertex_full_tangent(void)
+ {
+  for(unsigned leg=0;leg<=2;leg+=2) {
+-  CarTask3Config c=CarTask4_Config();CarTask3 t={0};CarTask3Output o;
++  CarTask3Config c=CarTask4_Config();c.continuous_motion=0;CarTask3 t={0};CarTask3Output o;
+   CarTask3Input in={.heading_ready=1,.enabled=1};
+   assert(CarTask3_Start(&t,&c,&in));
+   t.phase=T3_VERTEX_SEEK;t.leg=leg;t.pending_start_signal=0;
+@@ -55,7 +58,7 @@ static void b_relief_regression(void)
+  const float starts[]={0,179,-179};
+  const float expected[]={-144.34019f,34.65981f,36.65981f};
+  for(unsigned k=0;k<3;k++) {
+-  CarTask3Config c=CarTask4_Config();CarTask3 t={0};CarTask3Output o;
++  CarTask3Config c=CarTask4_Config();c.continuous_motion=0;CarTask3 t={0};CarTask3Output o;
+   CarTask3Input in={.heading_ready=1,.enabled=1,.yaw_deg=starts[k]};
+   assert(c.bd_turn_relief_deg==3 && CarTask3_Start(&t,&c,&in));
+   t.phase=T3_ALIGN;t.leg=2;t.pending_start_signal=0;
